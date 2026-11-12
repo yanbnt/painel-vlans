@@ -1,0 +1,11 @@
+# Dados da sua rede e do seu computador: ficam só na máquina, nunca no repositório
+plano.json
+plano.anterior.json
+historico.log
+ips-temporarios.json
+escuta/
+
+# Ambiente
+.claude/
+__pycache__/
+*.pyc
