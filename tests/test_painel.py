@@ -420,8 +420,22 @@ check('escuta: falha do capturador explica e traz o detalhe', 'pktmon' in why an
 check('escuta: depois da falha nao sobra arquivo de gravacao', left() == ['escuta.log'], left())
 pl.run_elevated = fake_listen(0, write=False)
 check('escuta: sem gravacao entregue, avisa', 'código 0' in refused(lambda: pl.listen(15)) or 'gravação' in refused(lambda: pl.listen(15)))
+def fake_unreadable(script, timeout=240):
+    os.makedirs(pl.LISTEN_DIR, exist_ok=True)
+    with open(os.path.join(pl.LISTEN_DIR, 'escuta.on'), 'w') as f:
+        f.write('on')
+    with open(os.path.join(pl.LISTEN_DIR, 'escuta.pcapng'), 'wb') as f:
+        f.write(F.pcapng([]) + b'formato que o painel nao conhece')
+    return 0
+
+
+pl.run_elevated = fake_unreadable
+why = refused(lambda: pl.listen(15))
+check('escuta: gravacao sem anuncio legivel avisa em vez de dizer que nao achou nada', 'não conseguiu ler' in why and pl.LISTEN_KEPT in why, why)
+check('escuta: a gravacao ilegivel fica guardada para analise', left() == sorted(['escuta.log', pl.LISTEN_KEPT]) or left() == sorted([pl.LISTEN_KEPT]), left())
 pl.run_elevated = fake_listen(0)
 check('escuta: depois de um erro, a proxima escuta funciona', len(pl.listen(15)['hosts']) > 5)
+check('escuta: a proxima escuta apaga a gravacao guardada', pl.LISTEN_KEPT not in left(), left())
 pl.run_elevated = real_elevated
 shutil.rmtree(cap_dir, ignore_errors=True)
 

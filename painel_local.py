@@ -1099,6 +1099,7 @@ def net_remove_all():
 # traffic, and the capture file is deleted as soon as it has been read.
 
 LISTEN_DIR = os.path.join(BASE, 'escuta')
+LISTEN_KEPT = 'escuta-sem-leitura.pcapng'
 LISTEN_LOCK = threading.Lock()
 LISTEN_FILTERS = (('painel-arp', '-d', 'ARP'), ('painel-lldp', '-d', '0x88CC'), ('painel-difusao', '-m', 'FF-FF-FF-FF-FF-FF'),
                   ('painel-stp', '-m', '01-80-C2-00-00-00'), ('painel-cdp', '-m', '01-00-0C-CC-CC-CC'),
@@ -1437,7 +1438,7 @@ def listen_assist(targets, stop):
 
 
 def listen_clean(keep_log=True):
-    for name in ('escuta.etl', 'escuta.pcapng', 'escuta.on') + (() if keep_log else ('escuta.log',)):
+    for name in ('escuta.etl', 'escuta.pcapng', 'escuta.on') + (() if keep_log else ('escuta.log', LISTEN_KEPT)):
         try:
             os.remove(os.path.join(LISTEN_DIR, name))
         except OSError:
@@ -1483,6 +1484,17 @@ def listen(seconds=40, dry=False):
             frames = pcapng_frames(pcap)
         except (OSError, struct.error) as e:
             raise NetError('Não foi possível ler a gravação da escuta (%s).' % e)
+        if not frames:
+            # A network in use always has announcements, so an empty reading means the file is not in the
+            # shape this program expects. Keep it for analysis instead of reporting "nothing found".
+            try:
+                size = os.path.getsize(pcap)
+                os.replace(pcap, os.path.join(LISTEN_DIR, LISTEN_KEPT))
+            except OSError:
+                size = -1
+            log('[%s] escuta do cabo  a gravação veio sem nenhum anúncio legível (%d bytes), guardada em escuta/%s' % (stamp(), size, LISTEN_KEPT))
+            raise NetError('O Windows gravou, mas o painel não conseguiu ler nenhum anúncio na gravação. Ela ficou guardada em '
+                           'escuta\\%s para análise. Nada ficou alterado no computador.' % LISTEN_KEPT)
         out = analyse(frames, [n for _, n, _ in targets], {a['mac'] for a in data['adapters']})
         out['seconds'] = seconds
         out['nets'] = [str(n) for _, n, _ in targets]

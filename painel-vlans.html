@@ -495,6 +495,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
     <label class="fld"><span>Portas de uplink (SFP)</span><input type="number" id="sw-sfp" min="0" max="8" inputmode="numeric"></label>
     <label class="fld"><span>Como configurar</span><select id="sw-syntax"><option value="comware">Linha de comando (Comware)</option><option value="manual">Pela interface web (roteiro)</option></select></label>
     <label class="fld"><span>IP de gerência</span><input type="text" id="sw-ip" class="mono" placeholder="192.168.0.1"></label>
+    <label class="fld"><span>MAC da etiqueta (opcional)</span><input type="text" id="sw-mac" class="mono" maxlength="17" placeholder="AC-1E-A9-00-00-00" autocomplete="off"></label>
     <label class="fld"><span>Nome das portas de rede</span><input type="text" id="sw-prefix" class="mono" placeholder="GigabitEthernet1/0/"></label>
     <label class="fld"><span>Nome das portas SFP</span><input type="text" id="sw-sfpprefix" class="mono" placeholder="GigabitEthernet1/0/"></label>
   </div>
@@ -590,9 +591,11 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
     if (!(vid >= 1 && vid <= 4094)) return null;
     return { vid: vid, name: String(d.name || ''), sector: String(d.sector || ''), subnet: String(d.subnet || ''), gateway: String(d.gateway || ''), dhcp: String(d.dhcp || ''), color: clampInt(d.color, 0, 8, 0), notes: String(d.notes || '') };
   }
+  /* A MAC written any way (aa:bb.., AABB-CCDD-.., aabbcc..) becomes AA-BB-CC-DD-EE-FF; anything else becomes ''. */
+  function normMac(m) { var h = String(m == null ? '' : m).replace(/[\s:.\-]/g, '').toUpperCase(); return /^[0-9A-F]{12}$/.test(h) ? h.match(/../g).join('-') : ''; }
   function normSwitch(id, d) {
     d = d || {};
-    return { id: id, name: String(d.name || 'Switch'), model: MODELS[d.model] ? d.model : 'outro', syntax: d.syntax === 'comware' ? 'comware' : 'manual', copper: clampInt(d.copper, 0, 96, 24), sfp: clampInt(d.sfp, 0, 8, 0), prefix: String(d.prefix == null ? '' : d.prefix), sfpPrefix: String(d.sfpPrefix == null ? '' : d.sfpPrefix), mgmtIp: String(d.mgmtIp || ''), notes: String(d.notes || ''), order: Number(d.order) || 0 };
+    return { id: id, name: String(d.name || 'Switch'), model: MODELS[d.model] ? d.model : 'outro', syntax: d.syntax === 'comware' ? 'comware' : 'manual', copper: clampInt(d.copper, 0, 96, 24), sfp: clampInt(d.sfp, 0, 8, 0), prefix: String(d.prefix == null ? '' : d.prefix), sfpPrefix: String(d.sfpPrefix == null ? '' : d.sfpPrefix), mgmtIp: String(d.mgmtIp || ''), mac: normMac(d.mac), notes: String(d.notes || ''), order: Number(d.order) || 0 };
   }
   function normPort(p) {
     p = p || {};
@@ -778,7 +781,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
       this.local();
     },
     saveSwitch: function (s) {
-      var body = { name: s.name, model: s.model, syntax: s.syntax, copper: s.copper, sfp: s.sfp, prefix: s.prefix, sfpPrefix: s.sfpPrefix, mgmtIp: s.mgmtIp, notes: s.notes, order: s.order };
+      var body = { name: s.name, model: s.model, syntax: s.syntax, copper: s.copper, sfp: s.sfp, prefix: s.prefix, sfpPrefix: s.sfpPrefix, mgmtIp: s.mgmtIp, mac: s.mac || '', notes: s.notes, order: s.order };
       if (S.mode === 'db') {
         this.write('switches/' + s.id, 'set', body);
         if (!S.portsDoc[s.id]) { S.portsDoc[s.id] = true; this.write('ports/' + s.id, 'set', { ports: {} }); }
@@ -2101,6 +2104,12 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
       rows.push({ key: (n.ip || '') + '|' + n.mac, ip: n.ip || '', mac: n.mac, net: '', flag: n.ip && mine(n.ip) ? '' : 'F', ports: [], heard: true, kind: kindOf(ns),
         svc: 'escuta: ' + ns.map(function (x) { return x.proto; }).join(', '), says: tell(ns) });
     });
+    /* A row that is one of the project's switches says so: matched by the MAC on the label, or by the management address when no MAC was given. */
+    rows.forEach(function (r) {
+      var names = S.switches.filter(function (s) { return s.mac ? s.mac === r.mac : (!!r.ip && s.mgmtIp.trim() === r.ip); }).map(function (s) { return s.name; });
+      if (!names.length) return;
+      r.kind = (/^(Switch$|MikroTik|Roteador \(gateway\))/.test(r.kind) ? r.kind : 'Switch') + ' · ' + names.join(' ou ');
+    });
     return rows.sort(function (a, b) { return num(a.ip) - num(b.ip) || (a.mac < b.mac ? -1 : a.mac > b.mac ? 1 : 0); });
   }
   function eqSel() { var r = eqRows(), i; for (i = 0; i < r.length; i++) if (r[i].key === EQ.sel) return r[i]; return null; }
@@ -2325,9 +2334,9 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
     $('#sw-model').innerHTML = Object.keys(MODELS).map(function (k) { return '<option value="' + k + '">' + MODELS[k].label + '</option>'; }).join('');
     if (s) {
       $('#sw-model').value = s.model; $('#sw-name').value = s.name; $('#sw-copper').value = s.copper; $('#sw-sfp').value = s.sfp;
-      $('#sw-prefix').value = s.prefix; $('#sw-sfpprefix').value = s.sfpPrefix; $('#sw-syntax').value = s.syntax; $('#sw-ip').value = s.mgmtIp; $('#sw-notes').value = s.notes;
+      $('#sw-prefix').value = s.prefix; $('#sw-sfpprefix').value = s.sfpPrefix; $('#sw-syntax').value = s.syntax; $('#sw-ip').value = s.mgmtIp; $('#sw-mac').value = s.mac || ''; $('#sw-notes').value = s.notes;
     } else {
-      $('#sw-model').value = 's2328g-a'; fillModel('s2328g-a'); $('#sw-name').value = ''; $('#sw-ip').value = ''; $('#sw-notes').value = '';
+      $('#sw-model').value = 's2328g-a'; fillModel('s2328g-a'); $('#sw-name').value = ''; $('#sw-ip').value = ''; $('#sw-mac').value = ''; $('#sw-notes').value = '';
     }
     $('#sw-err').hidden = true;
     var del = $('#sw-del'); del.hidden = !s || S.readOnly; del.textContent = 'Excluir'; del.dataset.armed = '';
@@ -2338,9 +2347,11 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
     if (!name) { err.textContent = 'Dê um nome ao switch.'; err.hidden = false; return; }
     var copper = clampInt($('#sw-copper').value, 0, 96, 24), sfp = clampInt($('#sw-sfp').value, 0, 8, 0);
     if (copper + sfp < 1) { err.textContent = 'O switch precisa ter pelo menos uma porta.'; err.hidden = false; return; }
+    var macText = $('#sw-mac').value.trim(), mac = normMac(macText);
+    if (macText && !mac) { err.textContent = 'Escreva o MAC com os 12 caracteres da etiqueta, como AC-1E-A9-00-00-00.'; err.hidden = false; return; }
     var id = old ? old.id : 'sw_' + Math.random().toString(36).slice(2, 8);
     var order = old ? old.order : S.switches.reduce(function (m, x) { return Math.max(m, x.order); }, 0) + 1;
-    store.saveSwitch({ id: id, name: name, model: $('#sw-model').value, syntax: $('#sw-syntax').value, copper: copper, sfp: sfp, prefix: $('#sw-prefix').value.trim(), sfpPrefix: $('#sw-sfpprefix').value.trim(), mgmtIp: $('#sw-ip').value.trim(), notes: $('#sw-notes').value.trim(), order: order });
+    store.saveSwitch({ id: id, name: name, model: $('#sw-model').value, syntax: $('#sw-syntax').value, copper: copper, sfp: sfp, prefix: $('#sw-prefix').value.trim(), sfpPrefix: $('#sw-sfpprefix').value.trim(), mgmtIp: $('#sw-ip').value.trim(), mac: mac, notes: $('#sw-notes').value.trim(), order: order });
     ui.sw = id; ui.wantSw = id; if (!old) { ui.sel = new Set(); ui.last = null; }
     $('#dlg-sw').close();
     renderAll();
