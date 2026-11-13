@@ -28,7 +28,7 @@ import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(BASE, 'painel-vlans.html')
@@ -885,6 +885,8 @@ def http_info(ip, tls, port=None):
         title = ' '.join(html.unescape(m.group(1)).replace('\ufeff', ' ').split())[:80] if m else ''
         if re.match(r'\d{3}\b', title):
             title = ''                                  # "302 Found", "401 Unauthorized": a status, not a name
+        if not title:
+            title = script_title(body) or page_model(body)
         m = re.search(r'^Location:[ \t]*(\S+)', head, re.I | re.M) if re.match(r'HTTP/\S+\s+3\d\d\b', head) else None
         if not m and not title:
             m = re.search(r'<meta[^>]+http-equiv\s*=\s*["\']?refresh["\']?[^>]*?url\s*=\s*["\']?([^"\'\s>]+)', body, re.I)
@@ -899,6 +901,169 @@ def http_info(ip, tls, port=None):
             out['words'] = ' '.join(html.unescape(text).replace('\ufeff', ' ').split())[:60]
         break
     return out
+
+
+def script_title(body):
+    """A page title that the page sets by script, as some switches do: document.title = "Model", or = a variable."""
+    m = re.search(r'document\.title\s*=\s*(?:["\']([^"\'<>]{2,60})["\']|([A-Za-z_]\w{0,30})\s*;)', body)
+    if m and not m.group(1):
+        m = re.search(r'\b%s\s*=\s*["\']([^"\'<>]{2,60})["\']' % re.escape(m.group(2)), body)
+    return ' '.join(html.unescape(m.group(1)).split())[:80] if m else ''
+
+
+def page_model(body):
+    """The model an Intelbras switch of the SF/SG line writes on its untitled login page, e.g. "<strong>SF</strong> 2842MR"."""
+    if 'intelbras' not in body.lower():
+        return ''
+    m = re.search(r'\b(S[GF]) ?(\d{4}) ?(MR|PoE)?\b', re.sub(r'<[^>]*>', '', body))
+    return ' '.join(x for x in m.groups() if x) if m else ''
+
+
+# ---- asking each device who it is: standard questions, each answered without any password
+
+VENDOR_FILE = os.path.join(BASE, 'fabricantes.tsv')
+VENDORS = None
+SNMP_OIDS = (b'\x2b\x06\x01\x02\x01\x01\x01\x00', b'\x2b\x06\x01\x02\x01\x01\x05\x00')      # what it is, its name
+
+
+def vendor_of(mac):
+    """The manufacturer that owns the MAC prefix, from the public IEEE list ('' for a randomised address)."""
+    global VENDORS
+    if VENDORS is None:
+        table = {}
+        try:
+            with open(VENDOR_FILE, encoding='utf-8') as f:
+                for line in f:
+                    prefix, _, name = line.rstrip('\r\n').partition('\t')
+                    if len(prefix) == 6 and name:
+                        table[prefix] = name
+        except OSError:
+            pass
+        VENDORS = table
+    m = re.sub(r'[^0-9A-Fa-f]', '', mac or '').upper()
+    if len(m) != 12 or m[1] in '26AE':
+        return ''
+    return VENDORS.get(m[:6], '')
+
+
+def udp_ask(ip, port, payload, timeout=1.0, tries=2, size=16384):
+    """One question over UDP and the device's answer (b'' when nobody answers)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return b''
+    try:
+        s.settimeout(timeout)
+        for _ in range(tries):
+            try:
+                s.sendto(payload, (ip, port))
+                data, peer = s.recvfrom(size)
+                if peer[0] == ip:
+                    return data
+            except socket.timeout:
+                continue
+            except OSError:
+                return b''            # the device answered "nothing listens on this port"
+        return b''
+    finally:
+        s.close()
+
+
+def netbios_name(ip, port=137):
+    """(computer name, workgroup) the way Windows machines and many printers announce them."""
+    q = struct.pack('>HHHHHH', 0x5056, 0, 1, 0, 0, 0) + b'\x20CK' + b'A' * 30 + b'\x00' + struct.pack('>HH', 0x21, 1)
+    d = udp_ask(ip, port, q)
+    if len(d) < 57 or d[:2] != q[:2]:
+        return '', ''
+    name = group = ''
+    for i in range(d[56]):
+        e = d[57 + i * 18:75 + i * 18]
+        if len(e) < 18:
+            break
+        if e[15] == 0x00:
+            text = ''.join(c if c.isprintable() else ' ' for c in e[:15].decode('cp850', 'replace')).strip()
+            if struct.unpack('>H', e[16:18])[0] & 0x8000:
+                group = group or text
+            else:
+                name = name or text
+    return name, group
+
+
+def ber(tag, value):
+    n = len(value)
+    return bytes([tag]) + (bytes([n]) if n < 128 else bytes([0x81, n]) if n < 256 else bytes([0x82, n >> 8, n & 255])) + value
+
+
+def snmp_info(ip, port=161):
+    """(what the device says it is, its name), by the standard read-only question with the usual community "public"."""
+    binds = b''.join(ber(0x30, ber(0x06, o) + b'\x05\x00') for o in SNMP_OIDS)
+    pdu = ber(0xA0, ber(0x02, b'\x12\x34\x56\x78') + b'\x02\x01\x00\x02\x01\x00' + ber(0x30, binds))
+    d = udp_ask(ip, port, ber(0x30, b'\x02\x01\x01' + ber(0x04, b'public') + pdu))
+    out = []
+    for o in SNMP_OIDS:
+        i, text = d.find(b'\x06' + bytes([len(o)]) + o), ''
+        j = i + 2 + len(o)
+        if i >= 0 and j + 2 <= len(d) and d[j] == 0x04:
+            n, k = d[j + 1], j + 2
+            if n & 0x80:
+                c = n & 0x7F
+                n, k = int.from_bytes(d[k:k + c], 'big'), k + c
+            text = wire_text(d[k:k + n], 160)
+        out.append(text)
+    return out[0], out[1]
+
+
+def snmp_model(descr):
+    """The product name inside an SNMP description, which every maker writes its own way."""
+    m = re.search(r'Release \S+\s+(.+?)\s+Copyright', descr)            # "... Release 6368 INTELBRAS S2352G-A Copyright ..."
+    if m:
+        return m.group(1)[:50]
+    return re.split(r'\s+/\s+|\s+version\s+|,\s*Software|\s+Copyright|;|\s+-\s+', descr, maxsplit=1, flags=re.I)[0].strip()[:50]
+
+
+def dahua_info(ip, port=37810):
+    """{'model', 'klass'} of an Intelbras or Dahua camera, recorder or smart switch, by their own discovery question."""
+    body = b'{ "method" : "DHDiscover.search", "params" : { "mac" : "", "uni" : 1 } }\n'
+    head = b'\x20\x00\x00\x00DHIP' + b'\x00' * 8 + struct.pack('<I', len(body)) + b'\x00' * 4 + struct.pack('<I', len(body)) + b'\x00' * 4
+    d = udp_ask(ip, port, head + body)
+    i = d.find(b'{')
+    if i < 0:
+        return {}
+    try:
+        info = json.JSONDecoder().raw_decode(d[i:].decode('utf-8', 'replace'))[0]['params']['deviceInfo']
+        return {'model': wire_text(str(info.get('DeviceType') or '').encode(), 40), 'klass': wire_text(str(info.get('DeviceClass') or '').encode(), 20)}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def onvif_info(ip, port=3702):
+    """(hardware, name) from the standard discovery question of video devices (ONVIF)."""
+    u = secrets.token_hex(16)
+    probe = ('<?xml version="1.0" encoding="UTF-8"?><e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
+             'xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" '
+             'xmlns:dn="http://www.onvif.org/ver10/network/wsdl"><e:Header><w:MessageID>uuid:%s-%s-%s-%s-%s</w:MessageID>'
+             '<w:To e:mustUnderstand="true">urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>'
+             '<w:Action e:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header>'
+             '<e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body></e:Envelope>'
+             % (u[:8], u[8:12], u[12:16], u[16:20], u[20:])).encode('ascii')
+    d = udp_ask(ip, port, probe).decode('utf-8', 'replace')
+    found = {k: unquote(v) for k, v in re.findall(r'onvif://www\.onvif\.org/(name|hardware)/([^\s<"]+)', d)}
+    return wire_text(found.get('hardware', '').replace('_', ' ').encode(), 40), wire_text(found.get('name', '').replace('_', ' ').encode(), 40)
+
+
+def upnp_info(ip, port=1900):
+    """(name, maker, model) from the description a device publishes about itself (TVs, routers, media boxes)."""
+    q = ('M-SEARCH * HTTP/1.1\r\nHOST: %s:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: upnp:rootdevice\r\n\r\n' % ip).encode('ascii')
+    d = udp_ask(ip, port, q, tries=1).decode('utf-8', 'replace')
+    m = re.search(r'^LOCATION:[ \t]*http://([0-9.]+):(\d{1,5})(/[\x21-\x7e]{0,300})\s*$', d, re.I | re.M)
+    if not m or m.group(1) != ip or not 0 < int(m.group(2)) < 65536:
+        return '', '', ''
+    _, body = http_get(ip, False, m.group(3), int(m.group(2)))
+
+    def tag(name):
+        t = re.search(r'<%s>([^<]{1,80})</%s>' % (name, name), body)
+        return wire_text(html.unescape(t.group(1)).encode(), 60) if t else ''
+    return tag('friendlyName'), tag('manufacturer'), tag('modelName')
 
 
 def telnet_banner(ip):
@@ -919,26 +1084,39 @@ def classify(h, gateways):
     p = set(h['ports'])
     t = ' '.join(h.get(k) or '' for k in ('title', 'realm', 'server')).lower()
     b, s, mac = (h.get('banner') or '').lower(), (h.get('ssh') or '').lower(), h.get('mac') or ''
+    name, pc, klass = (h.get('name') or '').lower(), h.get('pc') or '', (h.get('klass') or '').upper()
+    said = ' '.join(h.get(k) or '' for k in ('model', 'descr')).lower()       # what the device answered about itself
     if h['ip'] in gateways:
         return 'Roteador (gateway)'
-    if 8291 in p or 'mikrotik' in b or 'mikrotik' in t or 'routeros' in t or 'rosssh' in s:
+    if 8291 in p or 'mikrotik' in b or 'mikrotik' in t or 'routeros' in t + said or 'rosssh' in s:
         return 'MikroTik'
-    if 'switch' in t or 'managerment' in t or 'comware' in s:
+    if (klass == 'TS' or 'switch' in t or 'managerment' in t or 'comware' in s
+            or re.search(r'switch|platform software|\bs[gf] ?\d{4}\b|\bs\d{4}g\b', t + ' ' + said)):
         return 'Switch'
-    if 'access control' in t or 'controle de acesso' in t:
+    if klass in ('BSC', 'ASI', 'ASA', 'ASC', 'VTO', 'VTH') or 'access control' in t or 'controle de acesso' in t or re.search(r'\bxpe\b', said):
         return 'Controle de acesso'
-    if 37777 in p:
+    if klass in ('NVR', 'DVR', 'XVR', 'HCVR', 'HDVR', 'MHDX') or re.search(r'\b(i?mhdx|i?nvd|nvr|dvr|xvr)\b', said):
+        return 'Gravador de vídeo'
+    if klass == 'MATRIX':
+        return 'Decodificador de vídeo'
+    if klass.startswith(('IPC', 'TPC', 'SD', 'PTZ')) or re.search(r'\bvip[- ]\w', said):
+        return 'Câmera'
+    if klass or 37777 in p:
         return 'Câmera ou gravador'
-    if 9100 in p:
+    if 445 in p and pc:
+        return 'Computador'                       # a Windows machine that also shares a printer is still a computer
+    if 9100 in p or 'printer' in said:
         return 'Impressora'
+    if re.search(r'\btv\b', name + ' ' + said):
+        return 'TV'
     if 23 in p and 'login' in b and 445 not in p:
         return 'Switch ou roteador'
     if 53 in p and 445 not in p and (80 in p or 443 in p):
         return 'Roteador ou AP Wi-Fi'
     if 554 in p:
         return 'Câmera'
-    if 445 in p:
-        return 'Computador'
+    if 445 in p or pc:
+        return 'Computador'                       # it answered with a Windows-style name
     if 80 in p or 443 in p:
         return 'Equipamento com tela web'
     if 23 in p or 22 in p:
@@ -948,11 +1126,16 @@ def classify(h, gateways):
     return ''
 
 
-def identify(hosts, gateways, ex, ports=SCAN_PORTS, web=((80, False), (443, True))):
-    """Fills in, for every host: the ports with a real service, what it says about itself, and the best guess."""
+def identify(hosts, gateways, ex, ports=SCAN_PORTS, web=((80, False), (443, True)), ask=True):
+    """Fills in, for every host: the ports with a real service, what it says about itself, and the best guess.
+
+    With ask, each device also gets the standard "who are you?" questions (name, model), none of which needs a password."""
     jobs = {(h['ip'], p): ex.submit(tcp_probe, h['ip'], p) for h in hosts for p in ports}
+    names = {h['ip']: ex.submit(netbios_name, h['ip']) for h in hosts} if ask else {}
+    snmps = {h['ip']: ex.submit(snmp_info, h['ip']) for h in hosts} if ask else {}
+    upnps = {h['ip']: ex.submit(upnp_info, h['ip']) for h in hosts} if ask else {}
     state = {k: j.result() for k, j in jobs.items()}
-    pages, banners = {}, {}
+    pages, banners, cams, onvifs = {}, {}, {}, {}
     for h in hosts:
         ip = h['ip']
         alive = [(p, tls) for p, tls in web if p in ports and state[(ip, p)][0] != 'closed']
@@ -962,6 +1145,9 @@ def identify(hosts, gateways, ex, ports=SCAN_PORTS, web=((80, False), (443, True
                 pages[(ip, p)] = ex.submit(http_info, ip, tls, p)
         if 23 in ports and state[(ip, 23)][0] == 'open':
             banners[ip] = ex.submit(telnet_banner, ip)
+        if ask and any(p in ports and state[(ip, p)][0] == 'open' for p in (37777, 554)):
+            cams[ip] = ex.submit(dahua_info, ip)
+            onvifs[ip] = ex.submit(onvif_info, ip)
     for h in hosts:
         ip = h['ip']
         info = [pages[(ip, p)].result() for p, _ in web if (ip, p) in pages]
@@ -972,6 +1158,15 @@ def identify(hosts, gateways, ex, ports=SCAN_PORTS, web=((80, False), (443, True
         first = state[(ip, 22)][1] if 22 in ports else b''
         h['ssh'] = first.decode('latin-1').split('\n')[0].strip()[:60] if first.startswith(b'SSH-') else ''
         h['banner'] = banners[ip].result() if ip in banners else ''
+        pc, group = names[ip].result() if ip in names else ('', '')
+        descr, sysname = snmps[ip].result() if ip in snmps else ('', '')
+        friendly, _, upnp_model = upnps[ip].result() if ip in upnps else ('', '', '')
+        cam = cams[ip].result() if ip in cams else {}
+        hardware = onvifs[ip].result()[0] if ip in onvifs else ''
+        h['pc'], h['name'], h['group'], h['descr'] = pc, pc or friendly or sysname, group, descr
+        h['model'] = cam.get('model') or hardware or upnp_model or snmp_model(descr)
+        h['klass'] = cam.get('klass', '')
+        h['vendor'] = vendor_of(h.get('mac'))
         h['kind'] = classify(h, gateways)
 
 
@@ -1020,7 +1215,7 @@ def scan_network(dry=False):
                 except ValueError:
                     pass
         hosts = list(found.values())
-        with ThreadPoolExecutor(max_workers=64) as ex:
+        with ThreadPoolExecutor(max_workers=96) as ex:
             identify(hosts, gateways, ex)
     hosts.sort(key=lambda h: tuple(int(x) for x in h['ip'].split('.')))
     log('[%s] procura na rede  %d equipamentos em %s' % (stamp(), len(hosts), ', '.join(n['net'] for n in nets)))
@@ -1370,6 +1565,7 @@ def analyse(frames, nets, mine):
         home = next((n for n in nets if addr in n), None)
         h['known'] = home is not None
         h['proxy'] = h['mac'] in proxies
+        h['maker'] = vendor_of(h['mac'])
         h['net'] =str(home) if home else str(LINK_LOCAL) if addr in LINK_LOCAL else str(ipaddress.IPv4Network(h['ip'] + '/24', strict=False))
         h.update({k: v for k, v in labels.get(h['mac'], {}).items() if v and not h.get(k)})
         out.append(h)

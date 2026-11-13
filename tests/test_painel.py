@@ -239,12 +239,117 @@ check('procura: destino relativo', pl.next_page('login.html', '127.0.0.1', False
 check('procura: destino com https no mesmo equipamento', pl.next_page('https://127.0.0.1/login', '127.0.0.1', False, '/', 80) == (True, '/login', 443))
 hosts = [{'ip': '127.0.0.1', 'mac': '58-38-79-00-00-01'}]
 with ThreadPoolExecutor(max_workers=16) as ex:
-    pl.identify(hosts, set(), ex, ports=(2401, 2402, 2403, 2404, 2415, 2410, 2499), web=((2415, False), (2410, False)))
+    pl.identify(hosts, set(), ex, ports=(2401, 2402, 2403, 2404, 2415, 2410, 2499), web=((2415, False), (2410, False)), ask=False)
 h = hosts[0]
 check('procura: so ficam as portas com servico de verdade', h['ports'] == [2401, 2402, 2415, 2410], h)
 check('procura: tela web que fecha rapido ainda conta e da o nome', h['title'] == 'Impressora' and h['kind'] == '', h)
 for srv in servers:
     srv.close()
+
+# ---- automatic identification: each "who are you?" question against a local stand-in that answers like the real device
+
+
+def udp_serve(port, answer):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(('127.0.0.1', port))
+
+    def loop():
+        while True:
+            try:
+                data, peer = s.recvfrom(8192)
+            except OSError:
+                return
+            out = answer(data) if callable(answer) else answer
+            if out:
+                s.sendto(out, peer)
+    threading.Thread(target=loop, daemon=True).start()
+    return s
+
+
+def nb_entry(name, suffix, group):
+    return name.ljust(15).encode('ascii') + bytes([suffix]) + struct.pack('>H', 0x8400 if group else 0x0400)
+
+
+def nb_answer(q):
+    rd = bytes([3]) + nb_entry('PC-FINANCEIRO', 0x00, False) + nb_entry('WORKGROUP', 0x00, True) + nb_entry('PC-FINANCEIRO', 0x20, False) + b'\x00' * 46
+    return q[:2] + struct.pack('>HHHHH', 0x8400, 0, 1, 0, 0) + b'\x20CK' + b'A' * 30 + b'\x00' + struct.pack('>HHIH', 0x21, 1, 0, len(rd)) + rd
+
+
+def snmp_answer(descr, name):
+    binds = pl.ber(0x30, pl.ber(0x06, pl.SNMP_OIDS[0]) + pl.ber(0x04, descr)) + pl.ber(0x30, pl.ber(0x06, pl.SNMP_OIDS[1]) + pl.ber(0x04, name))
+    pdu = pl.ber(0xA2, pl.ber(0x02, b'\x12\x34\x56\x78') + b'\x02\x01\x00\x02\x01\x00' + pl.ber(0x30, binds))
+    return pl.ber(0x30, b'\x02\x01\x01' + pl.ber(0x04, b'public') + pdu)
+
+
+SW_DESCR = b'INTELBRAS Platform Software, Software Version 7.1.070, Release 6368 INTELBRAS S2352G-A Copyright (C) 2024 Intelbras S.A. All rights reserved.'
+DH_BODY = (b'{"mac":"00:11:22:33:44:55","method":"client.notifyDevInfo","params":{"deviceInfo":{"DeviceClass":"TS","DeviceType":"SMART S2110G-HPA",'
+           b'"Vendor":"General","SerialNo":"XXXX","Version":"1.000"}}}\n\x00')
+ONVIF_BODY = (b'<?xml version="1.0"?><e:Envelope><e:Body><d:ProbeMatches><d:ProbeMatch><d:Scopes>onvif://www.onvif.org/location/ '
+              b'onvif://www.onvif.org/name/Intelbras onvif://www.onvif.org/hardware/iMHDX_3132</d:Scopes></d:ProbeMatch></d:ProbeMatches></e:Body></e:Envelope>')
+UPNP_XML = '<?xml version="1.0"?><root><device><friendlyName>[TV] Sala &amp; Recep (43)</friendlyName><manufacturer>Samsung Electronics</manufacturer><modelName>UN43T5300</modelName></device></root>'
+stubs = [udp_serve(2437, nb_answer), udp_serve(2461, snmp_answer(SW_DESCR, b'INTELBRAS')),
+         udp_serve(2478, b'\x20\x00\x00\x00DHIP' + b'\x00' * 24 + DH_BODY), udp_serve(2472, ONVIF_BODY),
+         udp_serve(2419, b'HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: http://127.0.0.1:2420/desc.xml\r\nSERVER: Linux UPnP/1.0\r\nST: upnp:rootdevice\r\n\r\n'),
+         udp_serve(2418, b'HTTP/1.1 200 OK\r\nLOCATION: http://10.9.9.9:2420/desc.xml\r\n\r\n'),
+         udp_serve(2462, b'isto nao e SNMP'), udp_serve(2479, b'\x20\x00\x00\x00DHIP' + b'\x00' * 24 + b'{"params": 5}')]
+webs = [serve(2420, web({'/desc.xml': ('200 OK', '', UPNP_XML)}))]
+check('identifica: nome do computador e grupo (NetBIOS)', pl.netbios_name('127.0.0.1', 2437) == ('PC-FINANCEIRO', 'WORKGROUP'), pl.netbios_name('127.0.0.1', 2437))
+d, n = pl.snmp_info('127.0.0.1', 2461)
+check('identifica: descricao e nome por SNMP, com texto longo', d == SW_DESCR.decode() and n == 'INTELBRAS', (d, n))
+check('identifica: modelo dentro da descricao SNMP do switch', pl.snmp_model(d) == 'INTELBRAS S2352G-A', pl.snmp_model(d))
+check('identifica: modelo dentro da descricao SNMP de impressoras', pl.snmp_model('RICOH SP 3710SF V1.11 / RICOH Network Printer C model / RICOH Network Scanner C model') == 'RICOH SP 3710SF V1.11'
+      and pl.snmp_model('Lexmark MX310dn version NH63.SB.N640 kernel 3.0.0 All-N-1') == 'Lexmark MX310dn' and pl.snmp_model('') == '')
+check('identifica: modelo e classe pela pergunta da linha Intelbras/Dahua', pl.dahua_info('127.0.0.1', 2478) == {'model': 'SMART S2110G-HPA', 'klass': 'TS'}, pl.dahua_info('127.0.0.1', 2478))
+check('identifica: equipamento de video pelo ONVIF', pl.onvif_info('127.0.0.1', 2472) == ('iMHDX 3132', 'Intelbras'), pl.onvif_info('127.0.0.1', 2472))
+check('identifica: nome, marca e modelo pela descricao UPnP', pl.upnp_info('127.0.0.1', 2419) == ('[TV] Sala & Recep (43)', 'Samsung Electronics', 'UN43T5300'), pl.upnp_info('127.0.0.1', 2419))
+check('identifica: descricao UPnP em outro equipamento e ignorada', pl.upnp_info('127.0.0.1', 2418) == ('', '', ''), pl.upnp_info('127.0.0.1', 2418))
+check('identifica: respostas estranhas nao quebram', pl.snmp_info('127.0.0.1', 2462) == ('', '') and pl.dahua_info('127.0.0.1', 2479) == {} and pl.netbios_name('127.0.0.1', 2462) == ('', ''))
+t0 = time.time()
+quiet = (pl.netbios_name('127.0.0.1', 2498), pl.snmp_info('127.0.0.1', 2498), pl.dahua_info('127.0.0.1', 2498), pl.onvif_info('127.0.0.1', 2498), pl.upnp_info('127.0.0.1', 2498))
+check('identifica: quem nao responde devolve vazio, sem demorar', quiet == (('', ''), ('', ''), {}, ('', ''), ('', '', '')) and time.time() - t0 < 12, (quiet, time.time() - t0))
+for s in stubs + webs:
+    s.close()
+check('identifica: titulo que a pagina define por script', pl.script_title('<script>var stitle = "SF 2842 MR";</script><title></title><script>document.title = stitle;</script>') == 'SF 2842 MR'
+      and pl.script_title('<script>document.title="Roteador X"</script>') == 'Roteador X' and pl.script_title('<p>document sem titulo</p>') == '')
+check('identifica: modelo escrito na pagina de login da linha SF/SG', pl.page_model('var g_corporation = "Intelbras S.A."; banner += "<DIV><strong>SF</strong> 2842MR</DIV>";') == 'SF 2842 MR'
+      and pl.page_model('<b>SG</b> 2404 PoE da intelbras') == 'SG 2404 PoE' and pl.page_model('<strong>SF</strong> 2842MR de outra marca') == '' and pl.page_model('intelbras sem modelo') == '')
+vend = os.path.join(tempfile.mkdtemp(prefix='painel-fab-'), 'fabricantes.tsv')
+with open(vend, 'w', encoding='utf-8') as f:
+    f.write('AC1EA9\tIntelbras\n583879\tRICOH\nlinha torta\n')
+pl.VENDOR_FILE, pl.VENDORS = vend, None
+check('identifica: fabricante pelo comeco do MAC', pl.vendor_of('AC-1E-A9-00-00-E7') == 'Intelbras' and pl.vendor_of('58:38:79:00:00:01') == 'RICOH' and pl.vendor_of('ac1e-a900-00e7') == 'Intelbras')
+check('identifica: MAC aleatorio, desconhecido ou torto fica sem fabricante', pl.vendor_of('C6-00-00-00-00-B8') == '' and pl.vendor_of('00-00-5E-00-00-01') == '' and pl.vendor_of('') == '' and pl.vendor_of(None) == '')
+pl.VENDOR_FILE, pl.VENDORS = os.path.join(os.path.dirname(vend), 'nao-existe.tsv'), None
+check('identifica: sem a tabela de fabricantes, a procura continua', pl.vendor_of('AC-1E-A9-00-00-E7') == '')
+pl.VENDOR_FILE, pl.VENDORS = vend, None
+
+check('tipo: switch smart que responde como camera', K([80, 443, 37777], klass='TS', model='SMART S2110G-HPA') == 'Switch')
+check('tipo: switch pela descricao SNMP', K([23, 80, 443], descr=SW_DESCR.decode(), model='INTELBRAS S2352G-A', name='INTELBRAS') == 'Switch')
+check('tipo: switch pelo modelo SF/SG na pagina', K([23, 80, 443], title='SF 2842 MR') == 'Switch')
+check('tipo: camera', K([80, 554, 37777], klass='IPC', model='VIP-7430-A-FT') == 'Câmera' and K([80, 554], model='VIP-9420-IA-FT') == 'Câmera')
+check('tipo: gravador', K([80, 37777], klass='MHDX', model='iMHDX 3132') == 'Gravador de vídeo' and K([80, 37777], klass='NVR', model='iNVD 9216 PE FT') == 'Gravador de vídeo')
+check('tipo: controle de acesso', K([80, 37777], klass='BSC', model='SS 1530 MF W') == 'Controle de acesso' and K([23, 80, 554], model='XPE-3200-PLUS-IP') == 'Controle de acesso')
+check('tipo: decodificador de video', K([37777], klass='Matrix', model='DWL7804_G2') == 'Decodificador de vídeo')
+check('tipo: sem classe conhecida continua camera ou gravador', K([80, 37777]) == 'Câmera ou gravador' and K([80, 37777], klass='XYZ') == 'Câmera ou gravador')
+check('tipo: servidor Windows que compartilha impressora e computador', K([80, 443, 445, 9100], pc='SERVIDOR', name='SERVIDOR') == 'Computador')
+check('tipo: impressora com nome NetBIOS continua impressora', K([80, 443, 9100], pc='3710SF-000001', name='3710SF-000001', descr='RICOH SP 3710SF V1.11 / RICOH Network Printer C model') == 'Impressora')
+check('tipo: impressora so pela descricao', K([80], descr='Lexmark MX310dn version NH63 Network Printer') == 'Impressora')
+check('tipo: computador com firewall, pelo nome', K([], pc='DESKTOP-X', name='DESKTOP-X', mac='C6-00-00-00-00-B8') == 'Computador')
+check('tipo: TV', K([], name='[TV] Samsung 5 Series (43)', model='UN43T5300AGXZD') == 'TV' and K([], name='Samsung BE 55 TV - Projetos') == 'TV')
+check('tipo: nome que nao e de computador nao vira computador', K([80], name='nobreak') == 'Equipamento com tela web')
+check('tipo: modelo de celular nao vira switch', K([], model='SM-S9010') == '' and K([], model='SS 1530') == '')
+hosts = [{'ip': '127.0.0.1', 'mac': 'AC-1E-A9-00-00-E7'}]
+real = (pl.netbios_name, pl.snmp_info, pl.upnp_info, pl.dahua_info, pl.onvif_info)
+pl.netbios_name, pl.snmp_info, pl.upnp_info = (lambda ip: ('', '')), (lambda ip: (SW_DESCR.decode(), 'INTELBRAS')), (lambda ip: ('', '', ''))
+pl.dahua_info, pl.onvif_info = (lambda ip: {}), (lambda ip: ('', ''))
+with ThreadPoolExecutor(max_workers=8) as ex:
+    pl.identify(hosts, set(), ex, ports=(2499,), web=())
+h = hosts[0]
+check('identifica: a procura junta fabricante, nome, modelo e tipo', (h['vendor'], h['name'], h['model'], h['kind'], h['pc']) == ('Intelbras', 'INTELBRAS', 'INTELBRAS S2352G-A', 'Switch', ''), h)
+pl.netbios_name, pl.snmp_info, pl.upnp_info, pl.dahua_info, pl.onvif_info = real
+shutil.rmtree(os.path.dirname(vend), ignore_errors=True)
+pl.VENDOR_FILE, pl.VENDORS = os.path.join(os.path.dirname(APP), 'fabricantes.tsv'), None
+check('identifica: a tabela de fabricantes que acompanha o programa carrega', pl.vendor_of('AC-1E-A9-00-00-E7') == 'Intelbras' and len(pl.VENDORS) > 30000, len(pl.VENDORS or {}))
 
 # ---- listening on the wire: decoding a hand-made capture, and the session with the administrator part replaced
 import ipaddress  # noqa: E402
