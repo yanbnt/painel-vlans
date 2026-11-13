@@ -544,12 +544,60 @@ check('escuta: a proxima escuta apaga a gravacao guardada', pl.LISTEN_KEPT not i
 pl.run_elevated = real_elevated
 shutil.rmtree(cap_dir, ignore_errors=True)
 
+# ---- running as an installed app: where things go, which window opens, one copy at a time
+here, data_env = r'C:\Programa', {'LOCALAPPDATA': r'C:\Users\x\AppData\Local'}
+check('app: como script, programa e dados na mesma pasta', pl.app_dirs(False, '', here, data_env) == (here, here))
+check('app: instalado, dados na pasta do usuario', pl.app_dirs(True, r'C:\Programa\_internal', here, data_env) == (r'C:\Programa\_internal', os.path.join(r'C:\Users\x\AppData\Local', 'Painel de VLANs')))
+check('app: instalado sem pasta interna usa a do programa', pl.app_dirs(True, '', here, data_env)[0] == here)
+check('app: PAINEL_DADOS escolhe a pasta de dados', pl.app_dirs(True, 'b', here, dict(data_env, PAINEL_DADOS=r'D:\dados'))[1] == r'D:\dados'
+      and pl.app_dirs(False, '', here, {'PAINEL_DADOS': r'D:\dados'})[1] == r'D:\dados')
+fresh_spec = importlib.util.spec_from_file_location('painel_local_novo', APP)      # earlier tests repointed some paths
+fresh = importlib.util.module_from_spec(fresh_spec)
+fresh_spec.loader.exec_module(fresh)
+check('app: dados na pasta de dados, arquivos do programa na pasta do programa', all(p.startswith(fresh.DATA) for p in (fresh.PLAN, fresh.PLAN_BAK, fresh.LOG, fresh.NET_FILE, fresh.LISTEN_DIR))
+      and all(p.startswith(fresh.BASE) for p in (fresh.PAGE, fresh.ICON, fresh.VENDOR_FILE)))
+check('app: janela propria, sem abas', pl.app_window_command('x.exe', 'http://127.0.0.1:8765/')[:2] == ['x.exe', '--app=http://127.0.0.1:8765/'])
+fake_root = tempfile.mkdtemp(prefix='painel-navegador-')
+fake_edge = os.path.join(fake_root, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+os.makedirs(os.path.dirname(fake_edge))
+open(fake_edge, 'wb').close()
+found = pl.browser_candidates({'ProgramFiles(x86)': fake_root, 'ProgramFiles': os.path.join(fake_root, 'nao-existe')})
+check('app: acha o Edge e ignora caminhos que nao existem', fake_edge in found and all(os.path.isfile(f) for f in found) and len({f.lower() for f in found}) == len(found), found)
+shutil.rmtree(fake_root, ignore_errors=True)
+check('app: encerra so depois do tempo sem janela', not pl.idle_too_long(100, 50, 60, False) and pl.idle_too_long(100, 30, 60, False))
+check('app: nao encerra no meio de uma procura ou escuta', not pl.idle_too_long(1000, 0, 60, True))
+check('app: tempo zero desliga o encerramento', not pl.idle_too_long(10 ** 9, 0, 0, False))
+
+
+def answer_with(head):
+    def on_conn(c):
+        try:
+            c.settimeout(2)
+            c.recv(500)
+            c.sendall(head)
+        except OSError:
+            pass
+        c.close()
+    return on_conn
+
+
+twins = [serve(2441, answer_with(b'HTTP/1.0 403 Forbidden\r\nServer: PainelVLANs/1.0.0 Python/3.12.10\r\n\r\n')),
+         serve(2442, answer_with(b'HTTP/1.0 200 OK\r\nServer: nginx\r\n\r\n'))]
+check('app: reconhece outra copia do painel aberta', pl.running_panel(2441))
+check('app: outro programa na porta nao e o painel', not pl.running_panel(2442) and not pl.running_panel(2499))
+for s in twins:
+    s.close()
+
 # ---- HTTP layer, in a throwaway copy so the real plano.json is never touched
 tmp = tempfile.mkdtemp(prefix='painel-teste-')
 shutil.copy(APP, tmp)
 shutil.copy(os.path.join(os.path.dirname(APP), 'painel-vlans.html'), tmp)
+with open(os.path.join(tmp, 'painel.ico'), 'wb') as f:
+    f.write(b'\x00\x00\x01\x00icone de teste')
+data_dir = os.path.join(tmp, 'dados do usuario')
 HP = 8791
-proc = subprocess.Popen([sys.executable, os.path.join(tmp, 'painel_local.py'), '--porta', str(HP), '--sem-navegador'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+proc = subprocess.Popen([sys.executable, os.path.join(tmp, 'painel_local.py'), '--porta', str(HP), '--sem-navegador'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        env=dict(os.environ, PAINEL_DADOS=data_dir))
 mock = MockSwitch(2333)
 mock.start()
 base = 'http://127.0.0.1:%d' % HP
@@ -593,6 +641,20 @@ try:
     plan['vlans'].append({'vid': 10, 'name': 'Financeiro'})
     check('http: grava o plano', call('PUT', '/api/plan', plan, token=token)[0] == 200)
     check('http: le o plano gravado', call('GET', '/api/plan', token=token)[1]['vlans'][0]['vid'] == 10)
+    check('app: o plano vai para a pasta de dados', os.path.exists(os.path.join(data_dir, 'plano.json')) and not os.path.exists(os.path.join(tmp, 'plano.json')))
+    code, r = call('GET', '/api/ping', token=token)
+    check('app: a janela avisa que continua aberta', code == 200 and r.get('ok') is True and r.get('version') == pl.VERSION, r)
+    check('app: sem o codigo da pagina, o aviso e recusado', call('GET', '/api/ping')[0] == 403)
+    req = urllib.request.Request(base + '/favicon.ico')
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        check('app: o icone da janela vem do programa', resp.status == 200 and resp.read().startswith(b'\x00\x00\x01\x00'))
+    check('app: o programa se identifica para outra copia', pl.running_panel(HP))
+    t0 = time.time()
+    second = subprocess.run([sys.executable, os.path.join(tmp, 'painel_local.py'), '--porta', str(HP), '--sem-navegador'],
+                            capture_output=True, timeout=60, env=dict(os.environ, PAINEL_DADOS=data_dir))
+    said = second.stdout.decode('utf-8', 'replace')
+    check('app: a segunda copia usa a que ja esta aberta e sai', second.returncode == 0 and 'já está aberto' in said and str(HP) in said and time.time() - t0 < 20, said)
+    check('app: a segunda copia nao abriu outra porta', not pl.running_panel(HP + 1))
     check('http: plano invalido e recusado', call('PUT', '/api/plan', {'vlans': 'x'}, token=token)[0] == 400)
     check('http: aplicar sem conexao e recusado', call('POST', '/api/run', {'lines': CREATE}, token=token)[0] == 409)
     code, st = call('POST', '/api/connect', {'host': '127.0.0.1', 'port': 2333, 'user': 'admin', 'password': 'errada'}, token=token)
@@ -719,12 +781,13 @@ try:
     check('terminal: bloco funciona depois do terminal', code == 200 and r['ok'], r)
     code, st = call('POST', '/api/disconnect', {}, token=token)
     check('http: desconecta', code == 200 and not st['connected'])
-    hist0 = open(os.path.join(tmp, 'historico.log'), encoding='utf-8').read()
+    hist0 = open(os.path.join(data_dir, 'historico.log'), encoding='utf-8').read()
     check('historico: registra o terminal sem a senha', 'terminal' in hist0 and '(senha omitida)' in hist0 and 'Segredo#9aB' not in hist0)
-    hist = open(os.path.join(tmp, 'historico.log'), encoding='utf-8').read()
+    hist = open(os.path.join(data_dir, 'historico.log'), encoding='utf-8').read()
     check('historico: registra os blocos', 'Criar as VLANs  OK' in hist and 'PAROU' in hist)
     check('historico: sem senha', PW not in hist and 'errada' not in hist)
-    saved = open(os.path.join(tmp, 'plano.json'), encoding='utf-8').read()
+    check('app: o historico vai para a pasta de dados', not os.path.exists(os.path.join(tmp, 'historico.log')))
+    saved = open(os.path.join(data_dir, 'plano.json'), encoding='utf-8').read()
     check('plano.json: sem senha', PW not in saved)
 finally:
     proc.terminate()
@@ -733,6 +796,39 @@ finally:
     except Exception:
         proc.kill()
     shutil.rmtree(tmp, ignore_errors=True)
+
+# ---- closing by itself: alive while a window checks in, gone once none does
+tmp2 = tempfile.mkdtemp(prefix='painel-sozinho-')
+shutil.copy(APP, tmp2)
+shutil.copy(os.path.join(os.path.dirname(APP), 'painel-vlans.html'), tmp2)
+P2 = 8797
+lone = subprocess.Popen([sys.executable, os.path.join(tmp2, 'painel_local.py'), '--porta', str(P2), '--sem-navegador', '--encerrar-sozinho', '6'],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ, PAINEL_DADOS=os.path.join(tmp2, 'dados')))
+try:
+    for _ in range(40):
+        if pl.running_panel(P2):
+            break
+        time.sleep(0.25)
+    page = urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:%d/' % P2), timeout=10).read().decode('utf-8')
+    tok = json.loads(re.search(r'window\.PAINEL_LOCAL=(\{.*?\});', page).group(1))['token']
+    with urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:%d/favicon.ico' % P2), timeout=10) as resp:
+        check('app: sem icone, a janela usa o padrao do navegador', resp.status == 204)
+    for _ in range(6):
+        urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:%d/api/ping' % P2, headers={'X-Painel-Token': tok}), timeout=10).read()
+        time.sleep(2)
+    check('app: continua aberto enquanto a janela avisa', lone.poll() is None)
+    t0 = time.time()
+    try:
+        lone.wait(timeout=25)
+    except subprocess.TimeoutExpired:
+        pass
+    check('app: encerra sozinho depois que a janela some', lone.poll() == 0 and time.time() - t0 < 20, (lone.poll(), round(time.time() - t0, 1)))
+    out = lone.stdout.read().decode('utf-8', 'replace') if lone.poll() is not None else ''
+    check('app: avisa por que encerrou', 'Encerrando' in out, out[-300:])
+finally:
+    if lone.poll() is None:
+        lone.kill()
+    shutil.rmtree(tmp2, ignore_errors=True)
 
 print()
 print('TODOS OS TESTES PASSARAM' if not fails else 'FALHAS: %d -> %s' % (len(fails), fails))

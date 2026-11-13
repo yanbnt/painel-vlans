@@ -2,7 +2,7 @@
 
 Ferramenta local, no estilo do WinBox, para descobrir o que está ligado na rede, planejar VLANs e configurar switches gerenciáveis sem derrubar a rede.
 
-Roda no próprio computador: um programa em Python serve a tela no navegador e conversa com o switch e com a placa de rede. Nada sai para a internet.
+Roda no próprio computador: um programa local mostra o painel numa janela própria e conversa com o switch e com a placa de rede. Nada sai para a internet.
 
 ## O que faz
 
@@ -17,19 +17,43 @@ Roda no próprio computador: um programa em Python serve a tela no navegador e c
 - **Terminal**: explica cada comando e pede confirmação antes dos arriscados. Senhas digitadas nunca vão para o histórico.
 - **Início rápido**: tarefas guiadas e um terminal de treino, para Intelbras e MikroTik.
 
-## Como usar
+## Instalar
 
-Feito e testado no Windows 10 com Python 3.12. Usa só a biblioteca padrão do Python: não há nada para instalar.
+1. Rode `Instalar-Painel-de-VLANs-1.0.0.exe` e siga o assistente.
+2. Abra o **Painel de VLANs** pelo menu Iniciar, ou pelo atalho na área de trabalho se você marcou essa opção.
+
+- Não precisa de Python nem de permissão de administrador: por padrão instala só para o seu usuário, e o assistente oferece instalar para todos.
+- O painel abre numa janela própria, sem abas nem barra de endereço. Ela usa o Edge, que já vem no Windows; sem ele, usa o Chrome ou o navegador padrão.
+- Clicar no atalho com o painel já aberto abre outra janela do mesmo painel, sem abrir uma segunda cópia do programa.
+- O programa encerra sozinho uns três minutos depois que a última janela do painel é fechada.
+- Para remover: Configurações do Windows, **Aplicativos instalados**, Painel de VLANs. Os seus dados ficam guardados.
+- O instalador não tem assinatura digital. Em outros computadores, o Windows pode mostrar "O Windows protegeu o computador"; nesse caso, clique em **Mais informações** e depois em **Executar assim mesmo**.
+
+## Rodar sem instalar
+
+Feito e testado no Windows 10 com Python 3.12. Usa só a biblioteca padrão do Python.
 
 1. Baixe esta pasta.
 2. Dê dois cliques em `Iniciar painel.bat`.
-3. O painel abre no navegador, em `http://localhost:8765`.
+3. O painel abre numa janela própria, em `http://localhost:8765`.
 
 Também dá para iniciar pelo terminal:
 
 ```
 python painel_local.py --porta 8765 --sem-navegador
 ```
+
+## Gerar o instalador
+
+Precisa, só no computador que gera: Python 3 com o PyInstaller (`python -m pip install pyinstaller`) e o Inno Setup 6.6 ou mais novo (gratuito, em jrsoftware.org).
+
+Dê dois cliques em `Gerar instalador.bat`, ou rode:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File installer\gerar-instalador.ps1
+```
+
+O roteiro desenha o ícone e as imagens do assistente (`installer/arte.ps1`), empacota o programa com o Python dentro e monta o instalador (`installer/painel-vlans.iss`). O resultado fica em `build\saida`. A versão vem da linha `VERSION` de `painel_local.py`.
 
 ## O que pede a sua autorização
 
@@ -40,7 +64,7 @@ Três ações precisam de permissão de administrador: somar um IP temporário, 
 
 ## Arquivos que ficam só no seu computador
 
-O programa cria estes arquivos ao lado dele. Eles guardam dados da sua rede, estão no `.gitignore` e não devem ir para o repositório:
+Instalado, o programa guarda estes arquivos em `%LOCALAPPDATA%\Painel de VLANs`. Rodando sem instalar, ele os cria ao lado de `painel_local.py`. Eles guardam dados da sua rede, estão no `.gitignore` e não devem ir para o repositório:
 
 | Arquivo | O que guarda |
 |---|---|
@@ -48,6 +72,7 @@ O programa cria estes arquivos ao lado dele. Eles guardam dados da sua rede, est
 | `historico.log` | O que o programa fez no switch e na placa de rede |
 | `ips-temporarios.json` | Os IPs temporários que o painel somou |
 | `escuta/` | O registro da última escuta |
+| `programa.log` | Só na versão instalada: as mensagens do programa, que não tem janela de console |
 
 ## Tabela de fabricantes
 
@@ -74,5 +99,6 @@ Os testes usam um switch simulado e gravações de rede montadas à mão. Eles n
 ## O que já foi conferido
 
 - **Em equipamento real**: a procura de equipamentos, a identificação automática (switches, câmeras, gravadores, impressoras, TVs e computadores) e a leitura das placas de rede.
+- **No Windows 10**: o programa empacotado, e a instalação e a remoção silenciosas (atalho, registro em Aplicativos instalados e dados preservados). O assistente com as telas foi conferido só pelas imagens geradas.
 - **Só em simulação**: aplicar blocos, o terminal e as listas ao vivo (switch simulado); as ações que pedem autorização do Windows.
 - **Não conferido**: os comandos de MikroTik do assistente e do treino.

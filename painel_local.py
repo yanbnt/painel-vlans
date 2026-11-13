@@ -3,12 +3,15 @@
 """
 Painel de VLANs - programa local.
 
-Abre o painel no navegador deste computador, guarda o plano em plano.json
+Abre o painel numa janela propria deste computador, guarda o plano em plano.json
 e aplica blocos de comandos no switch por Telnet. Cada bloco so e enviado
 depois de uma confirmacao na tela, e o programa nunca grava a configuracao
 do switch por conta propria.
 
-Uso:  python painel_local.py [--porta 8765] [--sem-navegador]
+Uso:  python painel_local.py [--porta 8765] [--sem-navegador] [--encerrar-sozinho SEGUNDOS]
+
+Instalado (PainelVLANs.exe), os dados ficam em %LOCALAPPDATA%\\Painel de VLANs e o
+programa encerra sozinho alguns minutos depois que a janela do painel e fechada.
 """
 import argparse
 import base64
@@ -30,13 +33,32 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urljoin, urlsplit
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+VERSION = '1.0.0'
+
+
+def app_dirs(frozen, bundle, here, env):
+    """(folder with the program's own files, folder for the user's data).
+
+    Run as a script, both are the script's folder, as before. Installed (frozen by PyInstaller), the program's
+    files are read-only and the data goes to the user's own folder, so it survives updates and uninstalling.
+    PAINEL_DADOS chooses another data folder (the tests use it)."""
+    base = (bundle or here) if frozen else here
+    default = os.path.join(env.get('LOCALAPPDATA') or os.path.expanduser('~'), 'Painel de VLANs') if frozen else here
+    return base, env.get('PAINEL_DADOS') or default
+
+
+FROZEN = bool(getattr(sys, 'frozen', False))
+BASE, DATA = app_dirs(FROZEN, getattr(sys, '_MEIPASS', ''),
+                      os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__)), os.environ)
 PAGE = os.path.join(BASE, 'painel-vlans.html')
-PLAN = os.path.join(BASE, 'plano.json')
-PLAN_BAK = os.path.join(BASE, 'plano.anterior.json')
-LOG = os.path.join(BASE, 'historico.log')
+ICON = os.path.join(BASE, 'painel.ico')
+PLAN = os.path.join(DATA, 'plano.json')
+PLAN_BAK = os.path.join(DATA, 'plano.anterior.json')
+LOG = os.path.join(DATA, 'historico.log')
 TOKEN = secrets.token_urlsafe(24)
 PORT = 8765
+SEEN = {'at': time.time()}          # last time an open panel window talked to this program
+IDLE_INSTALLED = 180                # installed: close this long after the last panel window went away
 
 # ---------------------------------------------------------------- Telnet
 
@@ -555,7 +577,7 @@ def stamp():
 # restart (netsh store=active). Windows asks the person for permission (UAC) on every change.
 
 IS_WIN = os.name == 'nt'
-NET_FILE = os.path.join(BASE, 'ips-temporarios.json')
+NET_FILE = os.path.join(DATA, 'ips-temporarios.json')
 NO_WINDOW = 0x08000000 if IS_WIN else 0
 PRIVATE = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')]
 UAC_DECLINED = 1223
@@ -1293,7 +1315,7 @@ def net_remove_all():
 # permission prompt as the address changes. Only those announcements are captured, never ordinary
 # traffic, and the capture file is deleted as soon as it has been read.
 
-LISTEN_DIR = os.path.join(BASE, 'escuta')
+LISTEN_DIR = os.path.join(DATA, 'escuta')
 LISTEN_KEPT = 'escuta-sem-leitura.pcapng'
 LISTEN_LOCK = threading.Lock()
 LISTEN_FILTERS = (('painel-arp', '-d', 'ARP'), ('painel-lldp', '-d', '0x88CC'), ('painel-difusao', '-m', 'FF-FF-FF-FF-FF-FF'),
@@ -1710,7 +1732,7 @@ SESSION_LOCK = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PainelVLANs/1.0'
+    server_version = 'PainelVLANs/' + VERSION
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, *args):
@@ -1726,7 +1748,10 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get('Origin')
         if origin and origin.lower() not in ('http://127.0.0.1:%d' % PORT, 'http://localhost:%d' % PORT):
             return False
-        return secrets.compare_digest(self.headers.get('X-Painel-Token') or '', TOKEN)
+        ok = secrets.compare_digest(self.headers.get('X-Painel-Token') or '', TOKEN)
+        if ok:
+            SEEN['at'] = time.time()
+        return ok
 
     def _send(self, code, body, ctype):
         self.send_response(code)
@@ -1768,9 +1793,15 @@ class Handler(BaseHTTPRequestHandler):
                     '<script>window.PAINEL_LOCAL=' + json.dumps({'token': TOKEN}) + ';</script></head><body>')
             return self._send(200, (head + page + '</body></html>').encode('utf-8'), 'text/html; charset=utf-8')
         if path == '/favicon.ico':
-            return self._send(204, b'', 'image/x-icon')
+            try:
+                with open(ICON, 'rb') as f:
+                    return self._send(200, f.read(), 'image/x-icon')
+            except OSError:
+                return self._send(204, b'', 'image/x-icon')
         if not self._authorized():
             return self._json(403, {'error': 'Acesso negado.'})
+        if path == '/api/ping':
+            return self._json(200, {'ok': True, 'version': VERSION})
         if path == '/api/plan':
             return self._json(200, load_plan())
         if path == '/api/status':
@@ -1953,32 +1984,144 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {'error': 'Não encontrado.'})
 
 
-def main():
+# ---------------------------------------------------------------- running as an app
+
+class PanelServer(ThreadingHTTPServer):
+    # On Windows, SO_REUSEADDR would let a second copy take over a port that is already serving the panel.
+    allow_reuse_address = not IS_WIN
+
+
+def say(text):
+    """A line for whoever started the program; installed, there is no console and it goes to programa.log."""
+    if sys.stdout is not None:
+        try:
+            print(text)
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def running_panel(port, timeout=1.0):
+    """Is a copy of this program already serving the panel on that port?"""
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=timeout) as s:
+            s.settimeout(2.0)
+            s.sendall(('GET /api/ping HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n\r\n' % port).encode('ascii'))
+            head = s.recv(1024)
+    except OSError:
+        return False
+    return bool(re.search(rb'^Server:[ \t]*PainelVLANs/', head, re.M | re.I))
+
+
+def browser_candidates(env=None):
+    """Edge or Chrome on this computer, best first: they can show the panel in a window of its own, like an app."""
+    env = os.environ if env is None else env
+    found = []
+    if IS_WIN:
+        try:
+            import winreg
+            for exe in ('msedge.exe', 'chrome.exe'):
+                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                    try:
+                        with winreg.OpenKey(hive, 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\' + exe) as k:
+                            found.append(winreg.QueryValue(k, None))
+                    except OSError:
+                        pass
+        except ImportError:
+            pass
+    for var, rel in (('ProgramFiles(x86)', 'Microsoft\\Edge\\Application\\msedge.exe'), ('ProgramFiles', 'Microsoft\\Edge\\Application\\msedge.exe'),
+                     ('LOCALAPPDATA', 'Google\\Chrome\\Application\\chrome.exe'), ('ProgramFiles', 'Google\\Chrome\\Application\\chrome.exe'),
+                     ('ProgramFiles(x86)', 'Google\\Chrome\\Application\\chrome.exe')):
+        if env.get(var):
+            found.append(os.path.join(env[var], rel))
+    out = []
+    for f in found:
+        f = (f or '').strip().strip('"')
+        if f and os.path.isfile(f) and f.lower() not in [o.lower() for o in out]:
+            out.append(f)
+    return out
+
+
+def app_window_command(exe, url):
+    return [exe, '--app=' + url, '--window-size=1280,860']
+
+
+def open_app_window(url):
+    """The panel in a window of its own (no tabs or address bar); the default browser when Edge and Chrome are missing."""
+    for exe in browser_candidates():
+        try:
+            subprocess.Popen(app_window_command(exe, url), close_fds=True)
+            return True
+        except OSError:
+            continue
+    try:
+        return webbrowser.open(url)
+    except Exception:
+        return False
+
+
+def idle_too_long(now, seen, idle, busy):
+    return idle > 0 and not busy and now - seen > idle
+
+
+def close_when_unused(server, idle):
+    """Ends the program once no panel window has talked to it for `idle` seconds (open windows check in every 20 s)."""
+    while True:
+        time.sleep(max(1.0, min(5.0, idle / 3.0)))
+        if idle_too_long(time.time(), SEEN['at'], idle, SCAN_LOCK.locked() or LISTEN_LOCK.locked()):
+            say('Nenhuma janela do painel aberta há %d segundos. Encerrando.' % idle)
+            server.shutdown()
+            return
+
+
+def main(argv=None):
     global PORT
     ap = argparse.ArgumentParser(description='Painel de VLANs - programa local')
     ap.add_argument('--porta', type=int, default=8765)
-    ap.add_argument('--sem-navegador', action='store_true')
-    args = ap.parse_args()
+    ap.add_argument('--sem-navegador', action='store_true', help='não abre a janela do painel')
+    ap.add_argument('--encerrar-sozinho', type=int, default=IDLE_INSTALLED if FROZEN else 0, metavar='SEGUNDOS',
+                    help='encerra quando nenhuma janela do painel fala com o programa por esse tempo (0 = nunca)')
+    args = ap.parse_args(argv)
+    try:
+        os.makedirs(DATA, exist_ok=True)
+    except OSError as e:
+        say('Não foi possível criar a pasta de dados %s (%s).' % (DATA, e))
+        return 1
+    if FROZEN and sys.stdout is None:
+        try:
+            out = open(os.path.join(DATA, 'programa.log'), 'a', encoding='utf-8', buffering=1)
+            sys.stdout = sys.stderr = out
+        except OSError:
+            pass
     if not os.path.exists(PAGE):
-        print('Nao encontrei painel-vlans.html na mesma pasta deste programa.')
+        say('Nao encontrei painel-vlans.html na mesma pasta deste programa.')
         return 1
     server = None
     for p in range(args.porta, args.porta + 20):
+        if running_panel(p):
+            url = 'http://127.0.0.1:%d/' % p
+            say('O Painel de VLANs já está aberto em ' + url)
+            if not args.sem_navegador:
+                open_app_window(url)
+            return 0
         try:
-            server = ThreadingHTTPServer(('127.0.0.1', p), Handler)
+            server = PanelServer(('127.0.0.1', p), Handler)
             PORT = p
             break
         except OSError:
             continue
     if server is None:
-        print('Nenhuma porta livre entre %d e %d.' % (args.porta, args.porta + 19))
+        say('Nenhuma porta livre entre %d e %d.' % (args.porta, args.porta + 19))
         return 1
     url = 'http://127.0.0.1:%d/' % PORT
-    print('Painel de VLANs aberto em ' + url)
-    print('Deixe esta janela aberta enquanto usa o painel. Para encerrar, feche a janela ou aperte Ctrl+C.')
-    sys.stdout.flush()
+    SEEN['at'] = time.time()
+    say('[%s] Painel de VLANs %s aberto em %s (dados em %s)' % (stamp(), VERSION, url, DATA))
+    if args.encerrar_sozinho > 0:
+        threading.Thread(target=close_when_unused, args=(server, args.encerrar_sozinho), daemon=True).start()
+    else:
+        say('Deixe esta janela aberta enquanto usa o painel. Para encerrar, feche a janela ou aperte Ctrl+C.')
     if not args.sem_navegador:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, open_app_window, args=(url,)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

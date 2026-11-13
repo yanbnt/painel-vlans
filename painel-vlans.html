@@ -840,10 +840,12 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
         if (!r.ok) { var e = new Error((j && j.error) || ('Erro ' + r.status)); e.data = j; throw e; }
         return j;
       }, function () { throw new Error('Resposta inesperada do programa local.'); });
-    }, function () { throw new Error('O programa local não respondeu. Confira se a janela dele continua aberta.'); });
+    }, function () { throw new Error('O programa do painel não respondeu. Se ele foi fechado, abra o Painel de VLANs de novo.'); });
   }
   function startServer() {
     S.mode = 'server';
+    /* Tells the program this window is still open. Installed, it closes by itself a few minutes after the last window goes away. */
+    setInterval(function () { api('GET', '/api/ping').then(null, function () { }); }, 20000);
     api('GET', '/api/plan').then(function (d) {
       loadPlan(d); S.loaded = true; NT.dirty = true; ensureSw(); renderAll();
       if (ui.view === 'placa') loadNet();
