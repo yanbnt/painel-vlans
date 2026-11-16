@@ -1,6 +1,6 @@
-﻿# Gera o instalador do Painel de VLANs em três passos:
+﻿# Gera o instalador do Porteiro em três passos:
 #   1. desenha o ícone e as imagens do assistente            -> build\arte
-#   2. empacota o programa com o Python dentro (PyInstaller)  -> build\dist\PainelVLANs
+#   2. empacota o programa com o Python dentro (PyInstaller)  -> build\dist\Porteiro
 #   3. monta o instalador gráfico (Inno Setup 6.6 ou mais novo) -> build\saida
 #
 # Precisa, só no computador que gera: Python 3 com PyInstaller (python -m pip install pyinstaller) e o Inno Setup 6.
@@ -19,7 +19,7 @@ $m = Select-String -Path (Join-Path $raiz 'painel_local.py') -Pattern "^VERSION 
 if (-not $m) { throw 'Não encontrei a linha VERSION em painel_local.py.' }
 $g = $m.Matches[0].Groups
 $versao = '{0}.{1}.{2}' -f $g[1].Value, $g[2].Value, $g[3].Value
-Write-Host "Painel de VLANs $versao"
+Write-Host "Porteiro $versao"
 
 Write-Host '1/3 Desenhando o ícone e as imagens do instalador...'
 . (Join-Path $aqui 'arte.ps1')
@@ -41,11 +41,11 @@ VSVersionInfo(
   ffi=FixedFileInfo(filevers=$v, prodvers=$v, mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('041604B0', [
-      StringStruct('FileDescription', 'Painel de VLANs'),
+      StringStruct('FileDescription', 'Porteiro'),
       StringStruct('FileVersion', '$versao'),
-      StringStruct('InternalName', 'PainelVLANs'),
-      StringStruct('OriginalFilename', 'PainelVLANs.exe'),
-      StringStruct('ProductName', 'Painel de VLANs'),
+      StringStruct('InternalName', 'Porteiro'),
+      StringStruct('OriginalFilename', 'Porteiro.exe'),
+      StringStruct('ProductName', 'Porteiro'),
       StringStruct('ProductVersion', '$versao')])]),
     VarFileInfo([VarStruct('Translation', [0x0416, 1200])])
   ]
@@ -56,7 +56,7 @@ VSVersionInfo(
 $ico = Join-Path $arte 'painel.ico'
 $pagina = Join-Path $raiz 'painel-vlans.html'
 $fabricantes = Join-Path $raiz 'fabricantes.tsv'
-& python -m PyInstaller --noconfirm --clean --log-level WARN --windowed --onedir --name PainelVLANs `
+& python -m PyInstaller --noconfirm --clean --log-level WARN --windowed --onedir --name Porteiro `
     --icon $ico --version-file $versionFile `
     --add-data "${pagina}:." --add-data "${fabricantes}:." --add-data "${ico}:." `
     --distpath (Join-Path $build 'dist') --workpath (Join-Path $build 'trabalho') --specpath $build `
@@ -72,8 +72,8 @@ foreach ($base in @((Join-Path $env:LOCALAPPDATA 'Programs'), ${env:ProgramFiles
     }
 }
 if (-not $iscc) { throw 'Inno Setup 6 não encontrado. Ele é gratuito, no site jrsoftware.org.' }
-& $iscc /Q "/DAppVersion=$versao" "/DRaiz=$raiz" (Join-Path $aqui 'painel-vlans.iss')
+& $iscc /Q "/DAppVersion=$versao" "/DRaiz=$raiz" (Join-Path $aqui 'porteiro.iss')
 if ($LASTEXITCODE -ne 0) { throw 'O Inno Setup não conseguiu montar o instalador.' }
 
-$pronto = Get-Item (Join-Path $build "saida\Instalar-Painel-de-VLANs-$versao.exe")
+$pronto = Get-Item (Join-Path $build "saida\Instalar-Porteiro-$versao.exe")
 Write-Host ('Pronto: {0} ({1:N1} MB)' -f $pronto.FullName, ($pronto.Length / 1MB))

@@ -1,5 +1,5 @@
 @echo off
-title Gerar o instalador do Painel de VLANs
+title Gerar o instalador do Porteiro
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\gerar-instalador.ps1"
 if errorlevel 1 (

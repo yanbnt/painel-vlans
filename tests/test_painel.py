@@ -547,7 +547,24 @@ shutil.rmtree(cap_dir, ignore_errors=True)
 # ---- running as an installed app: where things go, which window opens, one copy at a time
 here, data_env = r'C:\Programa', {'LOCALAPPDATA': r'C:\Users\x\AppData\Local'}
 check('app: como script, programa e dados na mesma pasta', pl.app_dirs(False, '', here, data_env) == (here, here))
-check('app: instalado, dados na pasta do usuario', pl.app_dirs(True, r'C:\Programa\_internal', here, data_env) == (r'C:\Programa\_internal', os.path.join(r'C:\Users\x\AppData\Local', 'Painel de VLANs')))
+check('app: instalado, dados na pasta do usuario', pl.app_dirs(True, r'C:\Programa\_internal', here, data_env) == (r'C:\Programa\_internal', os.path.join(r'C:\Users\x\AppData\Local', 'Porteiro')))
+old_root = tempfile.mkdtemp(prefix='painel-versao-antiga-')
+old_dir, new_dir = os.path.join(old_root, 'Painel de VLANs'), os.path.join(old_root, 'Porteiro')
+os.makedirs(os.path.join(old_dir, 'escuta'))
+with open(os.path.join(old_dir, 'plano.json'), 'w', encoding='utf-8') as f:
+    f.write('{"vlans": [{"vid": 10}]}')
+check('app: como script, nao copia dados de versao antiga', not pl.carry_old_data(new_dir, False, {}) and not os.path.exists(new_dir))
+check('app: com PAINEL_DADOS, nao copia dados de versao antiga', not pl.carry_old_data(new_dir, True, {'PAINEL_DADOS': new_dir}) and not os.path.exists(new_dir))
+check('app: instalado, copia os dados do Painel de VLANs na primeira vez', pl.carry_old_data(new_dir, True, {})
+      and open(os.path.join(new_dir, 'plano.json'), encoding='utf-8').read() == '{"vlans": [{"vid": 10}]}' and os.path.isdir(os.path.join(new_dir, 'escuta')))
+check('app: a pasta antiga fica guardada', os.path.isfile(os.path.join(old_dir, 'plano.json')))
+with open(os.path.join(new_dir, 'plano.json'), 'w', encoding='utf-8') as f:
+    f.write('{"vlans": []}')
+check('app: depois da primeira vez, nao copia de novo por cima', not pl.carry_old_data(new_dir, True, {})
+      and open(os.path.join(new_dir, 'plano.json'), encoding='utf-8').read() == '{"vlans": []}')
+shutil.rmtree(old_dir)
+check('app: sem versao antiga, nao copia nada', not pl.carry_old_data(os.path.join(old_root, 'Outro'), True, {}))
+shutil.rmtree(old_root, ignore_errors=True)
 check('app: instalado sem pasta interna usa a do programa', pl.app_dirs(True, '', here, data_env)[0] == here)
 check('app: PAINEL_DADOS escolhe a pasta de dados', pl.app_dirs(True, 'b', here, dict(data_env, PAINEL_DADOS=r'D:\dados'))[1] == r'D:\dados'
       and pl.app_dirs(False, '', here, {'PAINEL_DADOS': r'D:\dados'})[1] == r'D:\dados')
@@ -581,7 +598,7 @@ def answer_with(head):
     return on_conn
 
 
-twins = [serve(2441, answer_with(b'HTTP/1.0 403 Forbidden\r\nServer: PainelVLANs/1.0.0 Python/3.12.10\r\n\r\n')),
+twins = [serve(2441, answer_with(b'HTTP/1.0 403 Forbidden\r\nServer: Porteiro/1.1.0 Python/3.12.10\r\n\r\n')),
          serve(2442, answer_with(b'HTTP/1.0 200 OK\r\nServer: nginx\r\n\r\n'))]
 check('app: reconhece outra copia do painel aberta', pl.running_panel(2441))
 check('app: outro programa na porta nao e o painel', not pl.running_panel(2442) and not pl.running_panel(2499))
@@ -632,7 +649,7 @@ try:
     code, page = call('GET', '/')
     m = re.search(r'window\.PAINEL_LOCAL=(\{.*?\});', page)
     token = json.loads(m.group(1))['token'] if m else ''
-    check('http: pagina servida com o token', code == 200 and bool(token) and 'Painel de VLANs' in page)
+    check('http: pagina servida com o token', code == 200 and bool(token) and '<title>Porteiro</title>' in page)
     check('http: API sem token e negada', call('GET', '/api/plan')[0] == 403)
     check('http: token errado e negado', call('GET', '/api/plan', token='x')[0] == 403)
     check('http: outro Host e negado', call('GET', '/api/plan', token=token, host='evil.example:%d' % HP)[0] == 403)

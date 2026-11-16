@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Painel de VLANs - programa local.
+Porteiro - gerenciamento de portas, VLANs e switches. Programa local.
 
 Abre o painel numa janela propria deste computador, guarda o plano em plano.json
 e aplica blocos de comandos no switch por Telnet. Cada bloco so e enviado
@@ -10,8 +10,8 @@ do switch por conta propria.
 
 Uso:  python painel_local.py [--porta 8765] [--sem-navegador] [--encerrar-sozinho SEGUNDOS]
 
-Instalado (PainelVLANs.exe), os dados ficam em %LOCALAPPDATA%\\Painel de VLANs e o
-programa encerra sozinho alguns minutos depois que a janela do painel e fechada.
+Instalado (Porteiro.exe), os dados ficam em %LOCALAPPDATA%\\Porteiro e o programa
+encerra sozinho alguns minutos depois que a janela do painel e fechada.
 """
 import argparse
 import base64
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import struct
@@ -33,7 +34,9 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urljoin, urlsplit
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
+APP_NAME = 'Porteiro'
+OLD_NAME = 'Painel de VLANs'        # the name of version 1.0.0
 
 
 def app_dirs(frozen, bundle, here, env):
@@ -43,8 +46,21 @@ def app_dirs(frozen, bundle, here, env):
     files are read-only and the data goes to the user's own folder, so it survives updates and uninstalling.
     PAINEL_DADOS chooses another data folder (the tests use it)."""
     base = (bundle or here) if frozen else here
-    default = os.path.join(env.get('LOCALAPPDATA') or os.path.expanduser('~'), 'Painel de VLANs') if frozen else here
+    default = os.path.join(env.get('LOCALAPPDATA') or os.path.expanduser('~'), APP_NAME) if frozen else here
     return base, env.get('PAINEL_DADOS') or default
+
+
+def carry_old_data(data, frozen, env):
+    """Version 1.0.0 was called Painel de VLANs and kept its data under that name: copy it over the first time.
+
+    Only for the installed program, only into a data folder that does not exist yet, and the old folder is kept."""
+    if not frozen or env.get('PAINEL_DADOS') or os.path.exists(data):
+        return False
+    old = os.path.join(os.path.dirname(data), OLD_NAME)
+    if not os.path.isdir(old):
+        return False
+    shutil.copytree(old, data)
+    return True
 
 
 FROZEN = bool(getattr(sys, 'frozen', False))
@@ -1732,7 +1748,7 @@ SESSION_LOCK = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PainelVLANs/' + VERSION
+    server_version = APP_NAME + '/' + VERSION
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, *args):
@@ -2010,7 +2026,7 @@ def running_panel(port, timeout=1.0):
             head = s.recv(1024)
     except OSError:
         return False
-    return bool(re.search(rb'^Server:[ \t]*PainelVLANs/', head, re.M | re.I))
+    return bool(re.search(rb'^Server:[ \t]*' + APP_NAME.encode('ascii') + rb'/', head, re.M | re.I))
 
 
 def browser_candidates(env=None):
@@ -2076,13 +2092,14 @@ def close_when_unused(server, idle):
 
 def main(argv=None):
     global PORT
-    ap = argparse.ArgumentParser(description='Painel de VLANs - programa local')
+    ap = argparse.ArgumentParser(description=APP_NAME + ' - gerenciamento de portas, VLANs e switches')
     ap.add_argument('--porta', type=int, default=8765)
     ap.add_argument('--sem-navegador', action='store_true', help='não abre a janela do painel')
     ap.add_argument('--encerrar-sozinho', type=int, default=IDLE_INSTALLED if FROZEN else 0, metavar='SEGUNDOS',
                     help='encerra quando nenhuma janela do painel fala com o programa por esse tempo (0 = nunca)')
     args = ap.parse_args(argv)
     try:
+        carried = carry_old_data(DATA, FROZEN, os.environ)
         os.makedirs(DATA, exist_ok=True)
     except OSError as e:
         say('Não foi possível criar a pasta de dados %s (%s).' % (DATA, e))
@@ -2100,7 +2117,7 @@ def main(argv=None):
     for p in range(args.porta, args.porta + 20):
         if running_panel(p):
             url = 'http://127.0.0.1:%d/' % p
-            say('O Painel de VLANs já está aberto em ' + url)
+            say('O %s já está aberto em %s' % (APP_NAME, url))
             if not args.sem_navegador:
                 open_app_window(url)
             return 0
@@ -2115,7 +2132,9 @@ def main(argv=None):
         return 1
     url = 'http://127.0.0.1:%d/' % PORT
     SEEN['at'] = time.time()
-    say('[%s] Painel de VLANs %s aberto em %s (dados em %s)' % (stamp(), VERSION, url, DATA))
+    say('[%s] %s %s aberto em %s (dados em %s)' % (stamp(), APP_NAME, VERSION, url, DATA))
+    if carried:
+        say('Os dados da versão anterior (%s) foram copiados para esta pasta.' % OLD_NAME)
     if args.encerrar_sozinho > 0:
         threading.Thread(target=close_when_unused, args=(server, args.encerrar_sozinho), daemon=True).start()
     else:

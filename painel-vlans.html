@@ -1,4 +1,4 @@
-<title>Painel de VLANs</title>
+<title>Porteiro</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 /* Layout: quiet slate chrome around one bold object, the switch faceplate. VLAN colors carry all the hue. */
@@ -415,7 +415,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
 <header class="top"><div class="wrap">
   <div>
     <div class="eyebrow">Rede · switches · 802.1Q</div>
-    <h1>Painel de VLANs</h1>
+    <h1>Porteiro</h1>
   </div>
   <div class="state" id="state" data-s="load"><i></i><span>Carregando…</span></div>
 </div></header>
@@ -840,7 +840,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
         if (!r.ok) { var e = new Error((j && j.error) || ('Erro ' + r.status)); e.data = j; throw e; }
         return j;
       }, function () { throw new Error('Resposta inesperada do programa local.'); });
-    }, function () { throw new Error('O programa do painel não respondeu. Se ele foi fechado, abra o Painel de VLANs de novo.'); });
+    }, function () { throw new Error('O programa do painel não respondeu. Se ele foi fechado, abra o Porteiro de novo.'); });
   }
   function startServer() {
     S.mode = 'server';
@@ -1840,7 +1840,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
   function mountShell() {
     var app = document.createElement('div');
     app.className = 'app';
-    app.innerHTML = '<header class="topbar"><button type="button" class="ib" id="side-toggle" data-act="side-toggle" aria-label="Abrir o menu">≡</button><b class="brand">Painel de VLANs</b><span class="sess" id="sess"></span><span class="grow"></span></header>' +
+    app.innerHTML = '<header class="topbar"><button type="button" class="ib" id="side-toggle" data-act="side-toggle" aria-label="Abrir o menu">≡</button><b class="brand">Porteiro</b><span class="sess" id="sess"></span><span class="grow"></span></header>' +
       '<div class="shell"><nav class="side" id="side" aria-label="Menu">' + WINS.map(function (w) {
         return (w.sep ? '<hr>' : '') + '<button type="button" id="m-' + w.id + '" data-act="menu" data-w="' + w.id + '" aria-pressed="false"><span class="ico" style="--c:var(--s' + w.c + ')" aria-hidden="true">' + w.ico + '</span>' + w.title + '</button>';
       }).join('') + '</nav><main class="desk" id="desk">' + WINS.map(function (w, i) {

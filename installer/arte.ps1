@@ -1,4 +1,4 @@
-﻿# Desenha o ícone e as imagens do instalador do Painel de VLANs, sem nenhum programa extra:
+﻿# Desenha o ícone, as imagens do instalador e a capa do Porteiro, sem nenhum programa extra:
 # usa o desenho do próprio Windows (System.Drawing). Chamado por gerar-instalador.ps1.
 #
 #   painel.ico          ícone do programa, do atalho e do instalador (16 a 256 pixels)
@@ -138,46 +138,20 @@ public static class ArtePainel
             using (SolidBrush soft = new SolidBrush(C("#9DB2C7")))
             using (SolidBrush white = new SolidBrush(Color.White))
             using (SolidBrush note = new SolidBrush(C("#B4C5D6")))
-            using (Font f1 = new Font("Segoe UI", 25 * k, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (Font f2 = new Font("Segoe UI Semibold", 64 * k, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (Font f1 = new Font("Segoe UI", 23 * k, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (Font f2 = new Font("Segoe UI Semibold", 66 * k, FontStyle.Regular, GraphicsUnit.Pixel))
             using (Font f3 = new Font("Segoe UI", 19 * k, FontStyle.Regular, GraphicsUnit.Pixel))
             {
                 center.Alignment = StringAlignment.Center;
-                g.DrawString("Painel de", f1, soft, new RectangleF(0, 268 * k, w, 40 * k), center);
-                g.DrawString("VLANs", f2, white, new RectangleF(0, 292 * k, w, 90 * k), center);
+                g.DrawString("Porteiro", f2, white, new RectangleF(0, 270 * k, w, 92 * k), center);
+                g.DrawString("gerenciamento de portas", f1, soft, new RectangleF(0, 356 * k, w, 36 * k), center);
                 string[] bar = { Blue, Orange, Green };
                 for (int i = 0; i < 3; i++)
-                    Fill(g, bar[i], 215 * k - 41 * k + i * 28 * k, 392 * k, 22 * k, 5 * k, 2.5f * k);
-                g.DrawString("Equipamentos da rede,\nVLANs e switches", f3, note, new RectangleF(0, 414 * k, w, 60 * k), center);
+                    Fill(g, bar[i], 215 * k - 41 * k + i * 28 * k, 404 * k, 22 * k, 5 * k, 2.5f * k);
+                g.DrawString("Equipamentos da rede,\nVLANs e switches", f3, note, new RectangleF(0, 424 * k, w, 60 * k), center);
             }
 
-            // Devices of each VLAN, wired into the ports of a switch.
-            float px0 = 45 * k, pw = 340 * k, py0 = 688 * k, ph = 46 * k;
-            float port = 18 * k, gap = 7 * k;
-            float gx = px0 + (pw - (12 * port + 11 * gap)) / 2, gy = py0 + (ph - port) / 2;
-            string[] portCol = { Blue, Blue, Blue, Blue, Orange, Orange, Orange, Green, Green, Violet, Amber, Unlit };
-            float[] nodeX = { 58, 96, 134, 170, 204, 238, 270, 302, 334, 364, 392 };
-            float[] nodeY = { 562, 518, 592, 540, 604, 530, 586, 546, 602, 522, 578 };
-            for (int i = 0; i < 11; i++)
-            {
-                float cx = gx + i * (port + gap) + port / 2, cy = gy;
-                float nx = nodeX[i] * k, ny = nodeY[i] * k;
-                using (Pen cable = new Pen(A(150, portCol[i]), 1.6f * k))
-                    g.DrawBezier(cable, nx, ny, nx, ny + 55 * k, cx, cy - 55 * k, cx, cy);
-                using (SolidBrush halo = new SolidBrush(A(60, portCol[i])))
-                    g.FillEllipse(halo, nx - 11 * k, ny - 11 * k, 22 * k, 22 * k);
-                using (SolidBrush dot = new SolidBrush(C(portCol[i])))
-                    g.FillEllipse(dot, nx - 6 * k, ny - 6 * k, 12 * k, 12 * k);
-            }
-            using (GraphicsPath face = Round(px0, py0, pw, ph, 8 * k))
-            using (SolidBrush fb = new SolidBrush(C("#0A1016")))
-            using (Pen fp = new Pen(C("#2A3541"), 1.5f * k))
-            {
-                g.FillPath(fb, face);
-                g.DrawPath(fp, face);
-            }
-            for (int i = 0; i < 12; i++)
-                Fill(g, portCol[i], gx + i * (port + gap), gy, port, port, 3 * k);
+            Network(g, 0, 0, k);
 
             using (StringFormat center = new StringFormat())
             using (SolidBrush dim = new SolidBrush(C("#6E8397")))
@@ -188,6 +162,82 @@ public static class ArtePainel
             }
         }
         return b;
+    }
+
+    // Devices of each VLAN, wired into the ports of a switch (drawn on the 430-wide grid, from y 506 to 734).
+    static void Network(Graphics g, float ox, float oy, float k)
+    {
+        float px0 = ox + 45 * k, pw = 340 * k, py0 = oy + 688 * k, ph = 46 * k;
+        float port = 18 * k, gap = 7 * k;
+        float gx = px0 + (pw - (12 * port + 11 * gap)) / 2, gy = py0 + (ph - port) / 2;
+        string[] portCol = { Blue, Blue, Blue, Blue, Orange, Orange, Orange, Green, Green, Violet, Amber, Unlit };
+        float[] nodeX = { 58, 96, 134, 170, 204, 238, 270, 302, 334, 364, 392 };
+        float[] nodeY = { 562, 518, 592, 540, 604, 530, 586, 546, 602, 522, 578 };
+        for (int i = 0; i < 11; i++)
+        {
+            float cx = gx + i * (port + gap) + port / 2, cy = gy;
+            float nx = ox + nodeX[i] * k, ny = oy + nodeY[i] * k;
+            using (Pen cable = new Pen(A(150, portCol[i]), 1.6f * k))
+                g.DrawBezier(cable, nx, ny, nx, ny + 55 * k, cx, cy - 55 * k, cx, cy);
+            using (SolidBrush halo = new SolidBrush(A(60, portCol[i])))
+                g.FillEllipse(halo, nx - 11 * k, ny - 11 * k, 22 * k, 22 * k);
+            using (SolidBrush dot = new SolidBrush(C(portCol[i])))
+                g.FillEllipse(dot, nx - 6 * k, ny - 6 * k, 12 * k, 12 * k);
+        }
+        using (GraphicsPath face = Round(px0, py0, pw, ph, 8 * k))
+        using (SolidBrush fb = new SolidBrush(C("#0A1016")))
+        using (Pen fp = new Pen(C("#2A3541"), 1.5f * k))
+        {
+            g.FillPath(fb, face);
+            g.DrawPath(fp, face);
+        }
+        for (int i = 0; i < 12; i++)
+            Fill(g, portCol[i], gx + i * (port + gap), gy, port, port, 3 * k);
+    }
+
+    // ---- the cover of the repository page (also the picture GitHub shows when the link is shared)
+
+    public static void Capa(string arquivo, string versao)
+    {
+        int w = 1280, h = 640;
+        using (Bitmap b = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+        {
+            using (Graphics g = Prep(b))
+            {
+                using (LinearGradientBrush bg = new LinearGradientBrush(new PointF(0, 0), new PointF(w, h), C("#0B151F"), C("#183552")))
+                    g.FillRectangle(bg, 0, 0, w, h);
+                using (GraphicsPath glow = new GraphicsPath())
+                {
+                    glow.AddEllipse(-60, 40, 560, 520);
+                    using (PathGradientBrush pg = new PathGradientBrush(glow))
+                    {
+                        pg.CenterColor = A(130, "#2F6DB2");
+                        pg.SurroundColors = new Color[] { A(0, "#2F6DB2") };
+                        g.FillPath(pg, glow);
+                    }
+                }
+                Icon(g, 92, 168, 300);
+                using (SolidBrush white = new SolidBrush(Color.White))
+                using (SolidBrush note = new SolidBrush(C("#B4C5D6")))
+                using (SolidBrush dim = new SolidBrush(C("#7F93A8")))
+                using (SolidBrush soft = new SolidBrush(C("#9DB2C7")))
+                using (Font title = new Font("Segoe UI Semibold", 96, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (Font sub = new Font("Segoe UI", 31, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (Font line = new Font("Segoe UI", 25, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (Font small = new Font("Segoe UI", 20, FontStyle.Regular, GraphicsUnit.Pixel))
+                {
+                    g.DrawString("Porteiro", title, white, 440, 104);
+                    g.DrawString("gerenciamento de portas e VLANs", sub, soft, 452, 230);
+                    string[] bar = { Blue, Orange, Green };
+                    for (int i = 0; i < 3; i++)
+                        Fill(g, bar[i], 456 + i * 40, 286, 32, 7, 3.5f);
+                    g.DrawString("Encontra e identifica os equipamentos\nda rede, organiza as portas em VLANs\ne configura switches de várias marcas.", line, note, 450, 314);
+                    g.DrawString("Windows  ·  instalador .exe  ·  v" + versao, small, dim, 452, 438);
+                }
+                Network(g, 868, -176, 0.94f);
+            }
+            b.Save(arquivo, ImageFormat.Png);
+        }
     }
 
     // ---- files
