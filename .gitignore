@@ -9,3 +9,6 @@ escuta/
 .claude/
 __pycache__/
 *.pyc
+
+# Instalador gerado (installer/gerar-instalador.ps1)
+build/
