@@ -7,7 +7,8 @@ Roda no próprio computador: um programa em Python serve a tela no navegador e c
 ## O que faz
 
 - **Equipamentos**
-  - Procura tudo o que responde nas faixas em que o computador tem endereço e dá um palpite do tipo (switch, roteador, câmera, impressora, computador).
+  - Procura tudo o que responde nas faixas em que o computador tem endereço e identifica cada equipamento sozinho: tipo, modelo, nome e fabricante.
+  - A identificação usa só o que o equipamento responde sem senha: a tela web, o nome de rede dos computadores (NetBIOS), a descrição por SNMP (comunidade `public`), a descoberta de câmeras, gravadores e switches da linha Intelbras/Dahua, ONVIF, UPnP e o fabricante dono do MAC.
   - Soma endereços temporários à placa de rede para alcançar equipamentos que ainda estão com IP de fábrica.
   - Escuta os anúncios da rede (ARP, LLDP, CDP, MNDP, spanning tree, DHCP) para achar equipamentos em qualquer faixa de IP, endereços usados por dois equipamentos e servidores DHCP.
 - **Projeto de VLANs**: plano por switch e por porta, comandos gerados e roteiro de migração.
@@ -48,6 +49,20 @@ O programa cria estes arquivos ao lado dele. Eles guardam dados da sua rede, est
 | `ips-temporarios.json` | Os IPs temporários que o painel somou |
 | `escuta/` | O registro da última escuta |
 
+## Tabela de fabricantes
+
+O arquivo `fabricantes.tsv` liga o começo de cada MAC ao fabricante. Ele é gerado a partir da lista pública da IEEE. Para atualizar:
+
+1. Baixe `oui.csv` de `https://standards-oui.ieee.org/oui/oui.csv` em uma pasta vazia.
+2. Rode `python -I tools/gerar_fabricantes.py <caminho do oui.csv> fabricantes.tsv`.
+
+Sem esse arquivo o painel funciona igual, só fica sem a coluna de fabricante.
+
+## O que a procura não consegue ver
+
+- Switch sem gerenciamento não tem endereço IP nem se anuncia na rede. Nenhuma procura o encontra.
+- Switch gerenciável que ainda não recebeu um IP (alguns modelos saem de fábrica assim e pedem o primeiro acesso pela porta console) só aparece depois de configurado.
+
 ## Testes
 
 ```
@@ -58,6 +73,6 @@ Os testes usam um switch simulado e gravações de rede montadas à mão. Eles n
 
 ## O que já foi conferido
 
-- **Em equipamento real**: a procura de equipamentos e a leitura das placas de rede.
+- **Em equipamento real**: a procura de equipamentos, a identificação automática (switches, câmeras, gravadores, impressoras, TVs e computadores) e a leitura das placas de rede.
 - **Só em simulação**: aplicar blocos, o terminal e as listas ao vivo (switch simulado); as ações que pedem autorização do Windows.
 - **Não conferido**: os comandos de MikroTik do assistente e do treino.

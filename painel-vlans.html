@@ -1814,7 +1814,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
   /* ---------- Shell: menu on the left, windows on a desk ---------- */
   var WINS = [
     { id: 'assistente', title: 'Início rápido', ico: 'Q', c: 4, w: 900 },
-    { id: 'equip', title: 'Equipamentos', ico: 'Eq', c: 8, w: 940, h: 460 },
+    { id: 'equip', title: 'Equipamentos', ico: 'Eq', c: 8, w: 1080, h: 460 },
     { id: 'interfaces', title: 'Interfaces', ico: 'If', c: 3, w: 800, h: 470 },
     { id: 'switch', title: 'Switch', ico: 'Sw', c: 1, w: 760, h: 400, tabs: [['vlans', 'VLANs'], ['hosts', 'Hosts']] },
     { id: 'ip', title: 'IP', ico: 'IP', c: 7, w: 760, h: 360, tabs: [['addr', 'Endereços'], ['arp', 'ARP'], ['routes', 'Rotas']] },
@@ -2068,8 +2068,8 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
   var EQ = { hosts: [], nets: [], at: '', busy: false, err: '', find: '', sel: null, heard: null, heardAt: '', since: 0, tick: null };
   function eqMine() { var n = 0; NT.adapters.forEach(function (a) { a.ips.forEach(function (i) { if (i.mine) n++; }); }); return n; }
   function eqKey(h) { return (h.ip || '') + '|' + h.mac; }
-  function heardNote(x) {
-    return [x.name, x.vendor, x.asks.length ? 'pergunta por ' + x.asks.join(', ') : '', x.vlan ? 'VLAN ' + x.vlan : '', x.net === '169.254.0.0/16' ? 'não recebeu endereço por DHCP' : '',
+  function heardNote(x, noName) {
+    return [noName ? '' : x.name, x.vendor, x.asks.length ? 'pergunta por ' + x.asks.join(', ') : '', x.vlan ? 'VLAN ' + x.vlan : '', x.net === '169.254.0.0/16' ? 'não recebeu endereço por DHCP' : '',
       x.proxy ? 'responde por vários endereços (roteador?)' : ''].filter(Boolean).join(' · ');
   }
   /* The list: what the last search found, plus what the last listening session heard and the search did not. */
@@ -2087,22 +2087,23 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
       var ns = near(h.mac, h.ip);
       have[eqKey(h)] = 1;
       rows.push({ key: eqKey(h), ip: h.ip, mac: h.mac, net: h.net, flag: (h.outside ? 'F' : '') + (dup[h.ip] ? 'D' : ''), ports: h.ports,
+        name: h.name || '', vendor: h.vendor || '',
         kind: h.kind === 'Roteador (gateway)' ? h.kind : kindOf(ns) || h.kind || '', svc: h.ports.map(function (p) { return PORTN[p] || p; }).join(', '),
-        says: [h.title || h.realm || h.server || h.banner || h.ssh || h.words || '', tell(ns)].filter(Boolean).join(' · ') });
+        says: [h.model || h.title || h.realm || h.server || h.banner || h.ssh || h.words || '', tell(ns)].filter(Boolean).join(' · ') });
     });
     H.hosts.forEach(function (x) {
       var ns;
       if (have[eqKey(x)]) return;
       have[eqKey(x)] = 1; ns = near(x.mac, x.ip);
       rows.push({ key: eqKey(x), ip: x.ip, mac: x.mac, net: x.net, flag: (x.known ? '' : 'F') + (dup[x.ip] ? 'D' : ''), ports: [], heard: true, kind: kindOf(ns), svc: 'escuta: ' + x.via.join(', '),
-        says: [heardNote(x), tell(ns)].filter(Boolean).join(' · ') });
+        name: x.name || '', vendor: x.maker || '', says: [heardNote(x, true), tell(ns)].filter(Boolean).join(' · ') });
     });
     H.neighbors.forEach(function (n, i) {
       var ns;
       if (used[i]) return;
       ns = near(n.mac, n.ip);
       rows.push({ key: (n.ip || '') + '|' + n.mac, ip: n.ip || '', mac: n.mac, net: '', flag: n.ip && mine(n.ip) ? '' : 'F', ports: [], heard: true, kind: kindOf(ns),
-        svc: 'escuta: ' + ns.map(function (x) { return x.proto; }).join(', '), says: tell(ns) });
+        name: n.name || '', vendor: '', svc: 'escuta: ' + ns.map(function (x) { return x.proto; }).join(', '), says: tell(ns) });
     });
     /* A row that is one of the project's switches says so: matched by the MAC on the label, or by the management address when no MAC was given. */
     rows.forEach(function (r) {
@@ -2137,16 +2138,16 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
       (n ?'<button type="button" class="ib rem" id="eq-clean" data-act="eq-clean" title="Remover os endereços temporários deste computador"' + dis + '><small>Remover IPs temporários (' + n + ')</small></button>' : '') +
       '<button type="button" class="ib" id="eq-open" data-act="eq-open" title="Abrir a tela web do equipamento selecionado"><small>Abrir</small></button><button type="button" class="ib" id="eq-term" data-act="eq-term" title="Conectar o terminal no equipamento selecionado"><small>Terminal</small></button>' +
       '<span class="grow"></span><input type="text" class="find" id="find-equip" data-inp="find-eq" placeholder="Localizar" value="' + esc(EQ.find) + '" autocomplete="off" spellcheck="false" aria-label="Localizar na lista"></div>' +
-      '<div class="lt-wrap"><table class="lt"><thead><tr><th></th><th>Endereço IP</th><th>MAC</th><th>Faixa</th><th>Tipo provável</th><th>Serviços</th><th>Identificação</th></tr></thead><tbody id="tb-equip"></tbody></table></div><div class="win-s" id="ls-equip"></div>';
+      '<div class="lt-wrap"><table class="lt"><thead><tr><th></th><th>Endereço IP</th><th>Tipo provável</th><th>Identificação</th><th>Nome</th><th>Fabricante</th><th>MAC</th><th>Faixa</th><th>Serviços</th></tr></thead><tbody id="tb-equip"></tbody></table></div><div class="win-s" id="ls-equip"></div>';
     renderEquipRows();
     if (keep) { a = $('#find-equip'); a.focus(); a.setSelectionRange(a.value.length, a.value.length); }
   }
   function renderEquipRows() {
     var tb = $('#tb-equip'), q = fold(EQ.find.trim()), rows;
     if (!tb) return;
-    rows = eqRows().filter(function (h) { return !q || fold([h.ip, h.mac, h.net, h.kind, h.svc, h.says].join(' ')).indexOf(q) >= 0; });
+    rows = eqRows().filter(function (h) { return !q || fold([h.ip, h.mac, h.net, h.kind, h.svc, h.says, h.name, h.vendor].join(' ')).indexOf(q) >= 0; });
     tb.innerHTML = rows.map(function (h) {
-      return '<tr data-act="eq-row" data-k="' + esc(h.key) + '" class="' + (EQ.sel === h.key ? 'sel' : '') + '"><td class="fl">' + h.flag + '</td><td>' + esc(h.ip) + '</td><td>' + esc(h.mac) + '</td><td>' + esc(h.net) + '</td><td>' + esc(h.kind) + '</td><td>' + esc(h.svc) + '</td><td>' + esc(h.says) + '</td></tr>';
+      return '<tr data-act="eq-row" data-k="' + esc(h.key) + '" class="' + (EQ.sel === h.key ? 'sel' : '') + '"><td class="fl">' + h.flag + '</td><td>' + esc(h.ip) + '</td><td>' + esc(h.kind) + '</td><td>' + esc(h.says) + '</td><td>' + esc(h.name) + '</td><td>' + esc(h.vendor) + '</td><td>' + esc(h.mac) + '</td><td>' + esc(h.net) + '</td><td>' + esc(h.svc) + '</td></tr>';
     }).join('');
     eqStatus(rows.length);
   }
